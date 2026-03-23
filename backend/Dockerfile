@@ -27,16 +27,16 @@ COPY frontend /app/public
 
 # Environment
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=3005
 ENV DATA_DIR=/data/videos
 ENV DB_PATH=/data/videos/database.sqlite
 ENV FRONTEND_DIR=/app/public
 
-EXPOSE 3000
+EXPOSE 3005
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD curl -f http://localhost:3000/api/health || exit 1
+  CMD curl -f http://localhost:3005/api/health || exit 1
 
 USER appuser
 
