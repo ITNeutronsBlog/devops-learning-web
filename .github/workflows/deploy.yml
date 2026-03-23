@@ -52,14 +52,21 @@ jobs:
             # Pull the new image
             docker pull ${IMAGE_FULL}
 
-            # Save current image SHA for rollback
-            docker inspect --format='{{.Id}}' $(docker compose ps -q app 2>/dev/null || echo "none") > /tmp/previous_image.txt 2>/dev/null || true
-
             # Stop existing containers gracefully
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml down --timeout 30
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml down --timeout 30 2>/dev/null || true
 
             # Start with new image
             IMAGE_FULL=${IMAGE_FULL} docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+            # Give container time to start
+            echo "Waiting 15s for container startup..."
+            sleep 15
+
+            # Debug: show container status and logs
+            echo "=== Container Status ==="
+            docker compose ps
+            echo "=== App Container Logs ==="
+            docker logs devops-learning-app 2>&1 | tail -50
 
             # Wait for health check (max 60s)
             echo "Waiting for health check..."
@@ -72,11 +79,12 @@ jobs:
               sleep 5
             done
 
-            # Health check failed — rollback
-            echo "❌ Health check failed! Rolling back..."
-            docker compose -f docker-compose.yml -f docker-compose.prod.yml down
-            IMAGE_FULL="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main" docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-            echo "⚠️  Rolled back to previous version"
+            # Health check failed — show logs for debugging
+            echo "❌ Health check failed!"
+            echo "=== FULL APP LOGS ==="
+            docker logs devops-learning-app 2>&1
+            echo "=== NGINX LOGS ==="
+            docker logs devops-learning-nginx 2>&1 | tail -20
             exit 1
 
       - name: Verify deployment
