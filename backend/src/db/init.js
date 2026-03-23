@@ -34,6 +34,14 @@ function initDatabase(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
   `);
 
+  // Migrate: add R2 columns if missing (for existing databases)
+  const columns = db.prepare('PRAGMA table_info(videos)').all().map(c => c.name);
+  if (!columns.includes('s3_key')) {
+    db.exec('ALTER TABLE videos ADD COLUMN s3_key TEXT');
+    db.exec('ALTER TABLE videos ADD COLUMN s3_url TEXT');
+    console.log('📦 Migrated: added s3_key, s3_url columns');
+  }
+
   console.log('📦 Database initialized at:', dbPath);
   return db;
 }
