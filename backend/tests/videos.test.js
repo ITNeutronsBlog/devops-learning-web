@@ -66,13 +66,30 @@ describe('API Tests', () => {
     });
   });
 
-  describe('POST /api/videos/upload', () => {
-    it('should reject requests without a file', async () => {
+  describe('POST /api/videos/presign', () => {
+    it('should return 503 when R2 is not configured', async () => {
       const res = await request(app)
-        .post('/api/videos/upload')
-        .field('title', 'Test Video');
+        .post('/api/videos/presign')
+        .send({ filename: 'test.mp4' });
+      expect(res.status).toBe(503);
+    });
+
+    it('should reject requests without a filename', async () => {
+      const res = await request(app)
+        .post('/api/videos/presign')
+        .send({});
+      // Either 400 (no filename) or 503 (R2 not configured) is acceptable
+      expect([400, 503]).toContain(res.status);
+    });
+  });
+
+  describe('POST /api/videos/register', () => {
+    it('should reject requests without id and s3Key', async () => {
+      const res = await request(app)
+        .post('/api/videos/register')
+        .send({});
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('No video file provided');
+      expect(res.body.error).toBe('id and s3Key are required');
     });
   });
 

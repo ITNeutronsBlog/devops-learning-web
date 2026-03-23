@@ -53,26 +53,25 @@ const API = {
     return this.request(`/api/videos/${id}`, { method: 'DELETE' });
   },
 
-  getTranscodeStatus(id) {
-    return this.request(`/api/videos/${id}/status`);
-  },
+  /**
+   * Upload video directly to R2 via presigned URL (bypasses server)
+   * Flow: 1) Get presigned URL from server  2) PUT file directly to R2  3) Register in DB
+   */
+  async uploadVideo(file, metadata, onProgress) {
+    // Step 1: Get presigned URL from our server (tiny JSON request)
+    const presign = await this.request('/api/videos/presign', {
+      method: 'POST',
+      body: JSON.stringify({
+        filename: file.name,
+        contentType: file.type || 'video/mp4'
+      })
+    });
 
-  retranscode(id) {
-    return this.request(`/api/videos/${id}/transcode`, { method: 'POST' });
-  },
-
-  // Upload with progress
-  uploadVideo(file, metadata, onProgress) {
-    return new Promise((resolve, reject) => {
-      const formData = new FormData();
-      formData.append('video', file);
-      if (metadata.title) formData.append('title', metadata.title);
-      if (metadata.description) formData.append('description', metadata.description);
-      if (metadata.category) formData.append('category', metadata.category);
-      if (metadata.tags) formData.append('tags', JSON.stringify(metadata.tags));
-
+    // Step 2: Upload file directly to R2 (browser → R2, never touches server)
+    await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${this.baseUrl}/api/videos/upload`);
+      xhr.open('PUT', presign.uploadUrl);
+      xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) {
@@ -85,24 +84,37 @@ const API = {
       };
 
       xhr.onload = () => {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve(data);
-          } else {
-            reject(new Error(data.error?.message || data.error || 'Upload failed'));
-          }
-        } catch (_e) {
-          reject(new Error('Invalid server response'));
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`R2 upload failed: HTTP ${xhr.status}`));
         }
       };
 
-      xhr.onerror = () => reject(new Error('Network error during upload'));
-      xhr.send(formData);
+      xhr.onerror = () => reject(new Error('Network error during R2 upload'));
+      xhr.send(file);
     });
+
+    // Step 3: Register video in DB (tiny JSON request)
+    const video = await this.request('/api/videos/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: presign.id,
+        s3Key: presign.s3Key,
+        publicUrl: presign.publicUrl,
+        filename: file.name,
+        fileSize: file.size,
+        title: metadata.title,
+        description: metadata.description,
+        category: metadata.category,
+        tags: metadata.tags
+      })
+    });
+
+    return video;
   },
 
-  // Download from URL
+  // Download from URL (still goes through server for yt-dlp)
   downloadFromUrl(url, category, tags) {
     return this.request('/api/videos/download', {
       method: 'POST',

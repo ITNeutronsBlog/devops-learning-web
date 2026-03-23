@@ -152,7 +152,7 @@ const Upload = {
           speed > 1048576 ? `${(speed / 1048576).toFixed(1)} MB/s` : `${(speed / 1024).toFixed(0)} KB/s`;
       });
 
-      App.showToast('Video uploaded! Transcoding started...', 'success');
+      App.showToast('Video uploaded successfully!', 'success');
       Upload.isUploading = false;
       Upload.selectedFile = null;
 

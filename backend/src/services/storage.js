@@ -1,4 +1,5 @@
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
 const path = require('path');
 
@@ -31,10 +32,33 @@ function isConfigured() {
 }
 
 /**
- * Upload a file to R2
- * @param {string} filePath - Local file path
+ * Generate a presigned PUT URL for direct browser → R2 upload
  * @param {string} key - S3 key (e.g., "videos/uuid.mp4")
- * @returns {Promise<{key: string, url: string, size: number}>}
+ * @param {string} contentType - MIME type
+ * @param {number} expiresIn - URL validity in seconds (default 1 hour)
+ * @returns {Promise<{uploadUrl: string, key: string, publicUrl: string}>}
+ */
+async function getPresignedUploadUrl(key, contentType = 'video/mp4', expiresIn = 3600) {
+  const client = getClient();
+  if (!client) throw new Error('R2 storage is not configured. Add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY to environment.');
+
+  const command = new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: key,
+    ContentType: contentType
+  });
+
+  const uploadUrl = await getSignedUrl(client, command, { expiresIn });
+
+  return {
+    uploadUrl,
+    key,
+    publicUrl: `${R2_PUBLIC_URL}/${key}`
+  };
+}
+
+/**
+ * Upload a file from disk to R2 (used for yt-dlp downloads)
  */
 async function uploadToR2(filePath, key) {
   const client = getClient();
@@ -44,7 +68,6 @@ async function uploadToR2(filePath, key) {
   const stat = fs.statSync(filePath);
   const ext = path.extname(filePath).toLowerCase();
 
-  // Determine content type
   const contentTypes = {
     '.mp4': 'video/mp4',
     '.webm': 'video/webm',
@@ -73,7 +96,6 @@ async function uploadToR2(filePath, key) {
 
 /**
  * Delete a file from R2
- * @param {string} key - S3 key to delete
  */
 async function deleteFromR2(key) {
   const client = getClient();
@@ -97,4 +119,4 @@ function getPublicUrl(key) {
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
-module.exports = { uploadToR2, deleteFromR2, getPublicUrl, isConfigured };
+module.exports = { uploadToR2, deleteFromR2, getPublicUrl, isConfigured, getPresignedUploadUrl };

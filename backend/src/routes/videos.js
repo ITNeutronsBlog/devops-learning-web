@@ -1,36 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const VideoManager = require('../services/videoManager');
+const { getPresignedUploadUrl, isConfigured } = require('../services/storage');
 const { downloadVideo, isYtdlpAvailable } = require('../services/ytdlp');
-
-// Multer storage config — temp upload to disk
-const storage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    cb(null, req.app.locals.UPLOADS_DIR);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `${uuidv4()}${ext}`);
-  }
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 * 1024 }, // 10 GB
-  fileFilter: (_req, file, cb) => {
-    const allowedTypes = /video\/(mp4|webm|mkv|avi|mov|x-matroska|quicktime)/;
-    const allowedExts = /\.(mp4|webm|mkv|avi|mov)$/i;
-    if (allowedTypes.test(file.mimetype) || allowedExts.test(file.originalname)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Unsupported file type: ${file.mimetype}`), false);
-    }
-  }
-});
 
 // Helper to get VideoManager instance
 function getManager(req) {
@@ -81,35 +55,75 @@ router.get('/videos/:id', (req, res) => {
 });
 
 // ———————————————————————————————————————
-// POST /api/videos/upload — Upload video → R2
+// POST /api/videos/presign — Get presigned URL for direct browser → R2 upload
+// Browser uploads directly to R2, server never touches the video file
 // ———————————————————————————————————————
-router.post('/videos/upload', upload.single('video'), async (req, res, next) => {
+router.post('/videos/presign', async (req, res, next) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No video file provided' });
+    if (!isConfigured()) {
+      return res.status(503).json({ error: 'R2 storage is not configured' });
     }
 
-    const manager = getManager(req);
-    const metadata = {
-      title: req.body.title || req.file.originalname,
-      description: req.body.description || '',
-      category: req.body.category || 'uncategorized',
-      tags: req.body.tags ? JSON.parse(req.body.tags) : []
-    };
+    const { filename, contentType = 'video/mp4' } = req.body;
+    if (!filename) return res.status(400).json({ error: 'Filename is required' });
 
-    const video = await manager.createVideo(req.file, metadata);
-    res.status(201).json(video);
+    const id = uuidv4();
+    const ext = path.extname(filename) || '.mp4';
+    const s3Key = `videos/${id}${ext}`;
+
+    const { uploadUrl, publicUrl } = await getPresignedUploadUrl(s3Key, contentType);
+
+    res.json({
+      id,
+      s3Key,
+      uploadUrl,
+      publicUrl
+    });
   } catch (err) {
-    // Clean up temp file on error
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
     next(err);
   }
 });
 
 // ———————————————————————————————————————
-// POST /api/videos/download — YouTube → R2
+// POST /api/videos/register — Register video in DB after direct R2 upload
+// Called by the browser after the file has been uploaded to R2
+// ———————————————————————————————————————
+router.post('/videos/register', (req, res, next) => {
+  try {
+    const { id, s3Key, publicUrl, filename, fileSize, title, description, category, tags } = req.body;
+
+    if (!id || !s3Key) {
+      return res.status(400).json({ error: 'id and s3Key are required' });
+    }
+
+    const manager = getManager(req);
+
+    manager.db.prepare(`
+      INSERT INTO videos (id, title, description, filename, original_path, file_size, category, tags, status, s3_key, s3_url)
+      VALUES (@id, @title, @description, @filename, @original_path, @file_size, @category, @tags, @status, @s3_key, @s3_url)
+    `).run({
+      id,
+      title: title || filename || 'Untitled',
+      description: description || '',
+      filename: filename || `${id}.mp4`,
+      original_path: '',
+      file_size: fileSize || 0,
+      category: category || 'uncategorized',
+      tags: JSON.stringify(tags || []),
+      status: 'ready',
+      s3_key: s3Key,
+      s3_url: publicUrl || ''
+    });
+
+    const video = manager.getVideo(id);
+    res.status(201).json(video);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ———————————————————————————————————————
+// POST /api/videos/download — YouTube → R2 (still goes through server)
 // ———————————————————————————————————————
 router.post('/videos/download', async (req, res, next) => {
   try {
