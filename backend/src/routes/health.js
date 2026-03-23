@@ -1,21 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const os = require('os');
-const { getDiskUsage } = require('../utils/fileUtils');
 const { execSync } = require('child_process');
+const { isConfigured } = require('../services/storage');
 
 router.get('/', (req, res) => {
   const db = req.app.locals.db;
-  const DATA_DIR = req.app.locals.DATA_DIR;
-
-  // Check FFmpeg
-  let ffmpegVersion = 'not found';
-  try {
-    ffmpegVersion = execSync('ffmpeg -version', { encoding: 'utf-8' })
-      .split('\n')[0];
-  } catch (_e) {
-    // FFmpeg not available
-  }
 
   // Check yt-dlp
   let ytdlpVersion = 'not found';
@@ -29,13 +19,9 @@ router.get('/', (req, res) => {
   const stats = db.prepare(`
     SELECT
       COUNT(*) as total,
-      SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready,
-      SUM(CASE WHEN status = 'transcoding' THEN 1 ELSE 0 END) as transcoding,
-      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errored
+      SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready
     FROM videos
   `).get();
-
-  const diskUsage = getDiskUsage(DATA_DIR);
 
   res.json({
     status: 'ok',
@@ -51,13 +37,11 @@ router.get('/', (req, res) => {
       cpus: os.cpus().length
     },
     tools: {
-      ffmpeg: ffmpegVersion,
       ytdlp: ytdlpVersion
     },
     storage: {
-      path: DATA_DIR,
-      used: diskUsage.formatted,
-      files: diskUsage.fileCount
+      type: isConfigured() ? 'Cloudflare R2' : 'local (R2 not configured)',
+      bucket: process.env.R2_BUCKET_NAME || 'not set'
     },
     videos: stats
   });

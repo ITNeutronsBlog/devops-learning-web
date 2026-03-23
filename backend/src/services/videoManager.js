@@ -1,18 +1,12 @@
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
-const { transcodeToHLS, getVideoInfo, generateThumbnail } = require('./transcoder');
-const { deleteDirectory } = require('../utils/fileUtils');
+const { uploadToR2, deleteFromR2, isConfigured } = require('./storage');
 
 class VideoManager {
   constructor(db, dirs) {
     this.db = db;
     this.uploadsDir = dirs.UPLOADS_DIR;
-    this.streamsDir = dirs.STREAMS_DIR;
-    this.thumbnailsDir = dirs.THUMBNAILS_DIR;
-
-    // Track active transcode jobs
-    this.activeJobs = new Map();
   }
 
   /**
@@ -64,33 +58,47 @@ class VideoManager {
     const video = this.db.prepare('SELECT * FROM videos WHERE id = ?').get(id);
     if (!video) return null;
     video.tags = JSON.parse(video.tags || '[]');
-
-    // Include transcode progress if active
-    if (this.activeJobs.has(id)) {
-      video.transcodeProgress = this.activeJobs.get(id).progress;
-    }
     return video;
   }
 
   /**
-   * Register a new video from an uploaded file
+   * Register a new video and upload to R2
    */
-  createVideo(file, metadata = {}) {
+  async createVideo(file, metadata = {}) {
     const id = uuidv4();
     const { title = file.originalname, description = '', category = 'uncategorized', tags = [] } = metadata;
 
+    const ext = path.extname(file.filename || file.originalname || '.mp4');
+    const s3Key = `videos/${id}${ext}`;
+
+    // Upload to R2
+    let s3Url = '';
+    if (isConfigured()) {
+      const localPath = file.path || path.join(this.uploadsDir, file.filename);
+      const result = await uploadToR2(localPath, s3Key);
+      s3Url = result.url;
+
+      // Delete local temp file after upload
+      if (fs.existsSync(localPath)) {
+        fs.unlinkSync(localPath);
+        console.log('🧹 Cleaned up local temp file');
+      }
+    }
+
     this.db.prepare(`
-      INSERT INTO videos (id, title, description, filename, original_path, file_size, category, tags)
-      VALUES (@id, @title, @description, @filename, @original_path, @file_size, @category, @tags)
+      INSERT INTO videos (id, title, description, filename, file_size, category, tags, status, s3_key, s3_url)
+      VALUES (@id, @title, @description, @filename, @file_size, @category, @tags, @status, @s3_key, @s3_url)
     `).run({
       id,
       title,
       description,
-      filename: file.filename,
-      original_path: file.path,
+      filename: file.filename || file.originalname,
       file_size: file.size,
       category,
-      tags: JSON.stringify(tags)
+      tags: JSON.stringify(tags),
+      status: 'ready',
+      s3_key: s3Key,
+      s3_url: s3Url
     });
 
     return this.getVideo(id);
@@ -125,88 +133,21 @@ class VideoManager {
   }
 
   /**
-   * Delete a video and all associated files
+   * Delete a video and its R2 object
    */
-  deleteVideo(id) {
+  async deleteVideo(id) {
     const video = this.getVideo(id);
     if (!video) return false;
 
-    // Delete original file
-    if (video.original_path && fs.existsSync(video.original_path)) {
-      fs.unlinkSync(video.original_path);
+    // Delete from R2
+    if (video.s3_key) {
+      await deleteFromR2(video.s3_key);
     }
-
-    // Delete HLS directory
-    const hlsDir = path.join(this.streamsDir, id);
-    deleteDirectory(hlsDir);
-
-    // Delete thumbnail
-    const thumbPath = path.join(this.thumbnailsDir, `${id}.jpg`);
-    if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
 
     // Delete DB record
     this.db.prepare('DELETE FROM videos WHERE id = ?').run(id);
-    this.activeJobs.delete(id);
 
     return true;
-  }
-
-  /**
-   * Start HLS transcoding for a video
-   */
-  async startTranscode(id) {
-    const video = this.getVideo(id);
-    if (!video) throw new Error('Video not found');
-    if (video.status === 'transcoding') throw new Error('Already transcoding');
-
-    // Update status
-    this.db.prepare("UPDATE videos SET status = 'transcoding', updated_at = datetime('now') WHERE id = ?").run(id);
-    this.activeJobs.set(id, { progress: 0, startedAt: Date.now() });
-
-    const outputDir = path.join(this.streamsDir, id);
-    const thumbnailPath = path.join(this.thumbnailsDir, `${id}.jpg`);
-
-    // Run transcode asynchronously
-    try {
-      // Get video info
-      const info = await getVideoInfo(video.original_path);
-
-      // Generate thumbnail
-      try {
-        await generateThumbnail(video.original_path, thumbnailPath);
-      } catch (e) {
-        console.warn('⚠️ Thumbnail generation failed:', e.message);
-      }
-
-      // Transcode to HLS
-      await transcodeToHLS(video.original_path, outputDir, (progress) => {
-        this.activeJobs.set(id, { progress, startedAt: this.activeJobs.get(id)?.startedAt });
-      });
-
-      // Update DB with results
-      this.db.prepare(`
-        UPDATE videos SET
-          status = 'ready',
-          hls_path = @hlsPath,
-          thumbnail = @thumbnail,
-          duration = @duration,
-          updated_at = datetime('now')
-        WHERE id = @id
-      `).run({
-        id,
-        hlsPath: `/streams/${id}/master.m3u8`,
-        thumbnail: fs.existsSync(thumbnailPath) ? `/thumbnails/${id}.jpg` : null,
-        duration: info.duration
-      });
-
-      this.activeJobs.delete(id);
-      console.log(`✅ Video ${id} transcoded successfully`);
-    } catch (error) {
-      console.error(`❌ Transcode failed for ${id}:`, error.message);
-      this.db.prepare("UPDATE videos SET status = 'error', updated_at = datetime('now') WHERE id = ?").run(id);
-      this.activeJobs.delete(id);
-      throw error;
-    }
   }
 
   /**
@@ -214,22 +155,6 @@ class VideoManager {
    */
   getCategories() {
     return this.db.prepare('SELECT DISTINCT category, COUNT(*) as count FROM videos GROUP BY category ORDER BY count DESC').all();
-  }
-
-  /**
-   * Get transcode status for a video
-   */
-  getTranscodeStatus(id) {
-    const video = this.getVideo(id);
-    if (!video) return null;
-
-    const job = this.activeJobs.get(id);
-    return {
-      id,
-      status: video.status,
-      progress: job?.progress || (video.status === 'ready' ? 100 : 0),
-      startedAt: job?.startedAt || null
-    };
   }
 }
 

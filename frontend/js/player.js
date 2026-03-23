@@ -1,8 +1,7 @@
 /**
- * Video Player — HLS.js integration with quality selector + speed control
+ * Video Player — Native MP4 player with speed control + keyboard shortcuts
  */
 const Player = {
-  hls: null,
   video: null,
   currentVideoId: null,
 
@@ -24,7 +23,7 @@ const Player = {
       const video = await API.getVideo(videoId);
       if (!video) return main.innerHTML = '<p>Video not found</p>';
 
-      if (video.status !== 'ready') {
+      if (video.status !== 'ready' || !video.s3_url) {
         main.innerHTML = `
           <div class="player-page">
             <a href="#/" class="back-btn">
@@ -32,8 +31,8 @@ const Player = {
               Back to Library
             </a>
             <div class="empty-state">
-              <h3>Video is ${video.status}</h3>
-              <p>${video.status === 'transcoding' ? 'Please wait while the video is being processed...' : 'There was an error processing this video.'}</p>
+              <h3>Video is not available</h3>
+              <p>${video.status === 'uploading' ? 'Please wait while the video is being uploaded...' : 'There was an error processing this video.'}</p>
             </div>
           </div>
         `;
@@ -47,7 +46,7 @@ const Player = {
         </a>
 
         <div class="player-wrapper" id="player-wrapper">
-          <video id="video-player" playsinline></video>
+          <video id="video-player" playsinline src="${video.s3_url}"></video>
           <div class="player-controls-overlay" id="player-controls">
             <button id="play-btn" title="Play/Pause (Space)">
               <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
@@ -64,10 +63,6 @@ const Player = {
                   `<div class="speed-option ${s === 1 ? 'active' : ''}" data-speed="${s}">${s}x</div>`
                 ).join('')}
               </div>
-            </div>
-            <div class="quality-selector">
-              <button class="quality-btn" id="quality-btn">Auto</button>
-              <div class="quality-dropdown" id="quality-dropdown"></div>
             </div>
             <button id="fullscreen-btn" title="Fullscreen (F)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -95,7 +90,7 @@ const Player = {
         </div>
       `;
 
-      Player.initPlayer(video.hls_path);
+      Player.initPlayer();
       Player.setupControls(video);
 
     } catch (err) {
@@ -103,67 +98,10 @@ const Player = {
     }
   },
 
-  initPlayer(hlsUrl) {
+  initPlayer() {
     const videoEl = document.getElementById('video-player');
     Player.video = videoEl;
-
-    // Destroy previous instance
-    if (Player.hls) {
-      Player.hls.destroy();
-      Player.hls = null;
-    }
-
-    if (Hls.isSupported()) {
-      Player.hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-        backBufferLength: 90
-      });
-      Player.hls.loadSource(hlsUrl);
-      Player.hls.attachMedia(videoEl);
-
-      Player.hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
-        Player.populateQualitySelector(data.levels);
-      });
-
-      Player.hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          console.error('HLS Fatal error:', data.type, data.details);
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            Player.hls.startLoad();
-          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            Player.hls.recoverMediaError();
-          }
-        }
-      });
-    } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
-      // Native HLS (Safari)
-      videoEl.src = hlsUrl;
-    }
-  },
-
-  populateQualitySelector(levels) {
-    const dropdown = document.getElementById('quality-dropdown');
-    if (!dropdown) return;
-
-    let html = '<div class="quality-option active" data-level="-1">Auto</div>';
-    levels.forEach((level, index) => {
-      html += `<div class="quality-option" data-level="${index}">${level.height}p</div>`;
-    });
-    dropdown.innerHTML = html;
-
-    dropdown.querySelectorAll('.quality-option').forEach(opt => {
-      opt.addEventListener('click', () => {
-        const level = parseInt(opt.dataset.level);
-        if (Player.hls) {
-          Player.hls.currentLevel = level;
-        }
-        document.getElementById('quality-btn').textContent = level === -1 ? 'Auto' : `${opt.textContent}`;
-        dropdown.querySelectorAll('.quality-option').forEach(o => o.classList.remove('active'));
-        opt.classList.add('active');
-        dropdown.classList.remove('show');
-      });
-    });
+    // Native MP4 — no HLS.js needed, browser handles range requests
   },
 
   setupControls(videoData) {
@@ -177,8 +115,6 @@ const Player = {
     const progressFill = document.getElementById('progress-fill');
     const timeDisplay = document.getElementById('time-display');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
-    const qualityBtn = document.getElementById('quality-btn');
-    const qualityDropdown = document.getElementById('quality-dropdown');
     const speedBtn = document.getElementById('speed-btn');
     const speedDropdown = document.getElementById('speed-dropdown');
     const editBtn = document.getElementById('edit-btn');
@@ -223,18 +159,10 @@ const Player = {
       }
     });
 
-    // Quality dropdown toggle
-    qualityBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      qualityDropdown?.classList.toggle('show');
-      speedDropdown?.classList.remove('show');
-    });
-
     // Speed dropdown toggle
     speedBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
       speedDropdown?.classList.toggle('show');
-      qualityDropdown?.classList.remove('show');
     });
 
     // Speed options
@@ -251,7 +179,6 @@ const Player = {
 
     // Close dropdowns on click outside
     document.addEventListener('click', () => {
-      qualityDropdown?.classList.remove('show');
       speedDropdown?.classList.remove('show');
     });
 
@@ -359,10 +286,6 @@ const Player = {
 
   destroy() {
     document.removeEventListener('keydown', Player.handleKeyboard);
-    if (Player.hls) {
-      Player.hls.destroy();
-      Player.hls = null;
-    }
     Player.video = null;
   }
 };

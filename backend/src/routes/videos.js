@@ -2,11 +2,12 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 const VideoManager = require('../services/videoManager');
 const { downloadVideo, isYtdlpAvailable } = require('../services/ytdlp');
 
-// Multer storage config
+// Multer storage config — temp upload to disk
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
     cb(null, req.app.locals.UPLOADS_DIR);
@@ -35,9 +36,7 @@ const upload = multer({
 function getManager(req) {
   if (!req.app.locals._videoManager) {
     req.app.locals._videoManager = new VideoManager(req.app.locals.db, {
-      UPLOADS_DIR: req.app.locals.UPLOADS_DIR,
-      STREAMS_DIR: req.app.locals.STREAMS_DIR,
-      THUMBNAILS_DIR: req.app.locals.THUMBNAILS_DIR
+      UPLOADS_DIR: req.app.locals.UPLOADS_DIR
     });
   }
   return req.app.locals._videoManager;
@@ -82,9 +81,9 @@ router.get('/videos/:id', (req, res) => {
 });
 
 // ———————————————————————————————————————
-// POST /api/videos/upload — Upload a video
+// POST /api/videos/upload — Upload video → R2
 // ———————————————————————————————————————
-router.post('/videos/upload', upload.single('video'), (req, res, next) => {
+router.post('/videos/upload', upload.single('video'), async (req, res, next) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No video file provided' });
@@ -98,21 +97,19 @@ router.post('/videos/upload', upload.single('video'), (req, res, next) => {
       tags: req.body.tags ? JSON.parse(req.body.tags) : []
     };
 
-    const video = manager.createVideo(req.file, metadata);
-
-    // Auto-start transcoding
-    manager.startTranscode(video.id).catch(err => {
-      console.error('Background transcode error:', err.message);
-    });
-
+    const video = await manager.createVideo(req.file, metadata);
     res.status(201).json(video);
   } catch (err) {
+    // Clean up temp file on error
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     next(err);
   }
 });
 
 // ———————————————————————————————————————
-// POST /api/videos/download — Download from YouTube
+// POST /api/videos/download — YouTube → R2
 // ———————————————————————————————————————
 router.post('/videos/download', async (req, res, next) => {
   try {
@@ -125,11 +122,11 @@ router.post('/videos/download', async (req, res, next) => {
 
     const manager = getManager(req);
 
-    // Download
+    // Download to temp directory
     const result = await downloadVideo(url, req.app.locals.UPLOADS_DIR);
 
-    // Register in database
-    const video = manager.createVideo(
+    // Upload to R2 and register in DB
+    const video = await manager.createVideo(
       {
         originalname: result.metadata.title || result.filename,
         filename: result.filename,
@@ -146,11 +143,6 @@ router.post('/videos/download', async (req, res, next) => {
 
     // Update source URL
     req.app.locals.db.prepare('UPDATE videos SET source_url = ? WHERE id = ?').run(url, video.id);
-
-    // Auto-start transcoding
-    manager.startTranscode(video.id).catch(err => {
-      console.error('Background transcode error:', err.message);
-    });
 
     res.status(201).json({ ...video, source_url: url });
   } catch (err) {
@@ -171,40 +163,15 @@ router.put('/videos/:id', (req, res) => {
 // ———————————————————————————————————————
 // DELETE /api/videos/:id — Delete video
 // ———————————————————————————————————————
-router.delete('/videos/:id', (req, res) => {
-  const manager = getManager(req);
-  const deleted = manager.deleteVideo(req.params.id);
-  if (!deleted) return res.status(404).json({ error: 'Video not found' });
-  res.json({ message: 'Video deleted successfully' });
-});
-
-// ———————————————————————————————————————
-// POST /api/videos/:id/transcode — Trigger transcode
-// ———————————————————————————————————————
-router.post('/videos/:id/transcode', async (req, res, next) => {
+router.delete('/videos/:id', async (req, res, next) => {
   try {
     const manager = getManager(req);
-    const video = manager.getVideo(req.params.id);
-    if (!video) return res.status(404).json({ error: 'Video not found' });
-
-    manager.startTranscode(req.params.id).catch(err => {
-      console.error('Background transcode error:', err.message);
-    });
-
-    res.json({ message: 'Transcoding started', id: req.params.id });
+    const deleted = await manager.deleteVideo(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Video not found' });
+    res.json({ message: 'Video deleted successfully' });
   } catch (err) {
     next(err);
   }
-});
-
-// ———————————————————————————————————————
-// GET /api/videos/:id/status — Get transcode status
-// ———————————————————————————————————————
-router.get('/videos/:id/status', (req, res) => {
-  const manager = getManager(req);
-  const status = manager.getTranscodeStatus(req.params.id);
-  if (!status) return res.status(404).json({ error: 'Video not found' });
-  res.json(status);
 });
 
 module.exports = router;

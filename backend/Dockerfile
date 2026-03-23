@@ -1,25 +1,26 @@
-# Build stage
+# ——— Build stage ———
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
 
-# Runtime stage
+# ——— Production stage ———
 FROM node:20-alpine
 WORKDIR /app
 
-# Install FFmpeg, python3, and yt-dlp
-RUN apk add --no-cache ffmpeg python3 py3-pip curl \
-    && pip3 install --break-system-packages yt-dlp \
-    && addgroup -S appgroup && adduser -S appuser -G appgroup \
-    && mkdir -p /data/videos/uploads /data/videos/streams /data/videos/thumbnails \
-    && chown -R appuser:appgroup /data
+# Install yt-dlp and curl (for health check)
+RUN apk add --no-cache curl python3 \
+  && wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+  && chmod +x /usr/local/bin/yt-dlp
 
-# Copy node_modules from builder
+# Create non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy dependencies
 COPY --from=builder /app/node_modules ./node_modules
-
-# Copy application code
 COPY backend/package*.json ./
+
+# Copy source code
 COPY backend/src ./src
 
 # Copy frontend

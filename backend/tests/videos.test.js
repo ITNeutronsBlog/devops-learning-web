@@ -13,6 +13,7 @@ describe('API Tests', () => {
       expect(res.body).toHaveProperty('timestamp');
       expect(res.body).toHaveProperty('system');
       expect(res.body).toHaveProperty('storage');
+      expect(res.body.storage).toHaveProperty('type');
       expect(res.body).toHaveProperty('videos');
     });
   });

@@ -120,24 +120,9 @@ const Library = {
           const video = videos.find(v => v.id === id);
           if (video && video.status === 'ready') {
             window.location.hash = `/watch/${id}`;
-          } else if (video && video.status === 'transcoding') {
-            App.showToast('Video is still transcoding...', 'info');
-          } else if (video && video.status === 'error') {
-            if (confirm('Transcoding failed. Re-try?')) {
-              API.retranscode(id).then(() => {
-                App.showToast('Re-transcoding started', 'success');
-                Library.loadVideos();
-              });
-            }
           }
         });
       });
-
-      // Poll for transcoding videos
-      const transcodingVideos = videos.filter(v => v.status === 'transcoding');
-      if (transcodingVideos.length > 0) {
-        setTimeout(() => Library.loadVideos(), 5000);
-      }
     } catch (err) {
       grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><h3>Failed to load videos</h3><p>${err.message}</p></div>`;
     }
