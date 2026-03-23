@@ -7,8 +7,6 @@ services:
     ports:
       - "3005:3005"
     volumes:
-      - ./backend/src:/app/src
-      - ./frontend:/app/public
       - video_data:/data/videos
     environment:
       - NODE_ENV=development
