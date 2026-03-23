@@ -86,13 +86,14 @@ class VideoManager {
     }
 
     this.db.prepare(`
-      INSERT INTO videos (id, title, description, filename, file_size, category, tags, status, s3_key, s3_url)
-      VALUES (@id, @title, @description, @filename, @file_size, @category, @tags, @status, @s3_key, @s3_url)
+      INSERT INTO videos (id, title, description, filename, original_path, file_size, category, tags, status, s3_key, s3_url)
+      VALUES (@id, @title, @description, @filename, @original_path, @file_size, @category, @tags, @status, @s3_key, @s3_url)
     `).run({
       id,
       title,
       description,
       filename: file.filename || file.originalname,
+      original_path: file.path || '',
       file_size: file.size,
       category,
       tags: JSON.stringify(tags),

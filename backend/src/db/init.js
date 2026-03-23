@@ -7,13 +7,14 @@ function initDatabase(dbPath) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  // Create videos table
+  // Create videos table (includes original_path for backward compat)
   db.exec(`
     CREATE TABLE IF NOT EXISTS videos (
       id            TEXT PRIMARY KEY,
       title         TEXT NOT NULL,
       description   TEXT DEFAULT '',
       filename      TEXT NOT NULL,
+      original_path TEXT DEFAULT '',
       file_size     INTEGER,
       status        TEXT DEFAULT 'ready',
       category      TEXT DEFAULT 'uncategorized',
@@ -34,12 +35,18 @@ function initDatabase(dbPath) {
     CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
   `);
 
-  // Migrate: add R2 columns if missing (for existing databases)
+  // Migrate: add any missing columns for existing databases
   const columns = db.prepare('PRAGMA table_info(videos)').all().map(c => c.name);
-  if (!columns.includes('s3_key')) {
-    db.exec('ALTER TABLE videos ADD COLUMN s3_key TEXT');
-    db.exec('ALTER TABLE videos ADD COLUMN s3_url TEXT');
-    console.log('📦 Migrated: added s3_key, s3_url columns');
+  const migrations = [
+    { col: 's3_key', sql: 'ALTER TABLE videos ADD COLUMN s3_key TEXT' },
+    { col: 's3_url', sql: 'ALTER TABLE videos ADD COLUMN s3_url TEXT' },
+    { col: 'source_url', sql: 'ALTER TABLE videos ADD COLUMN source_url TEXT' }
+  ];
+  for (const m of migrations) {
+    if (!columns.includes(m.col)) {
+      db.exec(m.sql);
+      console.log(`📦 Migrated: added ${m.col} column`);
+    }
   }
 
   console.log('📦 Database initialized at:', dbPath);
