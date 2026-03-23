@@ -25,11 +25,9 @@ function downloadVideo(url, outputDir) {
     console.log(`📥 Downloading: ${url}`);
 
     const proc = spawn('yt-dlp', args);
-    let output = '';
     let errorOutput = '';
 
     proc.stdout.on('data', (data) => {
-      output += data.toString();
       const progressMatch = data.toString().match(/(\d+\.?\d*)%/);
       if (progressMatch) {
         process.stdout.write(`\r  Download: ${progressMatch[1]}%`);

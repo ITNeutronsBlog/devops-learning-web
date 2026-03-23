@@ -10,7 +10,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: itneutronsblog/devops-learning-web
-  DEPLOY_DIR: /opt/devops-learning-web
+  DEPLOY_DIR: ~/devops-learning-web
 
 jobs:
   deploy:

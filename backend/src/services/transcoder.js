@@ -135,7 +135,7 @@ function transcodeToHLS(inputPath, outputDir, onProgress) {
         }
 
         args.push(
-          `-map`, `0:v:0`, `-map`, `0:a:0`,
+          '-map', '0:v:0', '-map', '0:a:0',
           `-c:v:${index}`, 'libx264',
           `-b:v:${index}`, profile.videoBitrate,
           `-maxrate:v:${index}`, profile.maxrate,
@@ -143,10 +143,10 @@ function transcodeToHLS(inputPath, outputDir, onProgress) {
           `-s:v:${index}`, profile.resolution,
           `-c:a:${index}`, 'aac',
           `-b:a:${index}`, profile.audioBitrate,
-          `-preset`, 'medium',
-          `-g`, '48',
-          `-keyint_min`, '48',
-          `-sc_threshold`, '0'
+          '-preset', 'medium',
+          '-g', '48',
+          '-keyint_min', '48',
+          '-sc_threshold', '0'
         );
       });
 
