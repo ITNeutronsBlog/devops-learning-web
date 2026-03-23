@@ -1,0 +1,28 @@
+# Production overrides — run with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  app:
+    image: ${IMAGE_FULL:-ghcr.io/itneutronsblog/devops-learning-web:latest}
+    volumes:
+      - video_data:/data/videos
+    environment:
+      - NODE_ENV=production
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: always
+
+  nginx:
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    restart: always

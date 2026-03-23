@@ -1,0 +1,31 @@
+name: Cleanup Old Resources
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+jobs:
+  cleanup-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean up Docker on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            # Remove dangling images
+            docker image prune -f
+
+            # Remove old images (keep last 3 tagged)
+            docker images ghcr.io/itneutronsblog/devops-learning-web \
+              --format "{{.ID}} {{.CreatedAt}}" | \
+              tail -n +4 | awk '{print $1}' | \
+              xargs -r docker rmi 2>/dev/null || true
+
+            # Remove unused volumes (NOT video data)
+            docker volume prune -f --filter "label!=keep"
+
+            echo "✅ Cleanup complete"
+            docker system df

@@ -1,0 +1,99 @@
+name: Deploy to Production
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: itneutronsblog/devops-learning-web
+  DEPLOY_DIR: /opt/devops-learning-web
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          source: "docker-compose.yml,docker-compose.prod.yml,nginx/"
+          target: ${{ env.DEPLOY_DIR }}
+          overwrite: true
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            set -e
+            cd ${{ env.DEPLOY_DIR }}
+
+            # Login to GitHub Container Registry
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Set image tag for this deployment
+            export IMAGE_TAG=${{ github.sha }}
+            export IMAGE_FULL="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+
+            # Pull the new image
+            docker pull ${IMAGE_FULL}
+
+            # Save current image SHA for rollback
+            docker inspect --format='{{.Id}}' $(docker compose ps -q app 2>/dev/null || echo "none") > /tmp/previous_image.txt 2>/dev/null || true
+
+            # Stop existing containers gracefully
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml down --timeout 30
+
+            # Start with new image
+            IMAGE_FULL=${IMAGE_FULL} docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+            # Wait for health check (max 60s)
+            echo "Waiting for health check..."
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
+                echo "✅ Health check passed!"
+                exit 0
+              fi
+              echo "  Attempt $i/12 — waiting 5s..."
+              sleep 5
+            done
+
+            # Health check failed — rollback
+            echo "❌ Health check failed! Rolling back..."
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml down
+            IMAGE_FULL="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main" docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+            echo "⚠️  Rolled back to previous version"
+            exit 1
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "=== Container status ==="
+            cd ${{ env.DEPLOY_DIR }}
+            docker compose ps
+            echo "=== Health ==="
+            curl -s http://localhost:3000/api/health | python3 -m json.tool || true
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Deployment to production FAILED for commit ${{ github.sha }}"

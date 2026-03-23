@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: devops-learning-app
+    ports:
+      - "3005:3005"
+    volumes:
+      - ./backend/src:/app/src
+      - ./frontend:/app/public
+      - video_data:/data/videos
+    environment:
+      - NODE_ENV=development
+      - PORT=3005
+      - DATA_DIR=/data/videos
+      - DB_PATH=/data/videos/database.sqlite
+      - FRONTEND_DIR=/app/public
+      - ALLOWED_ORIGINS=http://localhost:8080,http://localhost:3000
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: devops-learning-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./frontend:/usr/share/nginx/html:ro
+      - video_data:/data/videos:ro
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  video_data:
+    labels:
+      - "keep=true"
