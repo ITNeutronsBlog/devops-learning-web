@@ -11,6 +11,9 @@ function downloadVideo(url, outputDir) {
     const filename = `${uuidv4()}`;
     const outputTemplate = path.join(outputDir, `${filename}.%(ext)s`);
 
+    const cookiesPath = path.join(outputDir, '..', 'cookies.txt');
+    const hasCookies = fs.existsSync(cookiesPath);
+
     const args = [
       url,
       '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -20,13 +23,22 @@ function downloadVideo(url, outputDir) {
       '--no-playlist',
       '--no-overwrites',
       '--restrict-filenames',
-      // Use Node.js as the JS runtime (already in the container)
-      '--js-runtimes', 'nodejs',
-      // Use multiple player clients to bypass YouTube bot detection
-      '--extractor-args', 'youtube:player_client=ios,web_creator',
-      // Look like a normal browser
+      // Use Node.js as JS runtime (yt-dlp calls it 'node')
+      '--js-runtimes', 'node',
+      // Use player clients less likely to trigger bot detection
+      '--extractor-args', 'youtube:player_client=mweb,ios',
+      // Network flags
+      '--force-ipv4',
+      '--geo-bypass',
+      // Browser user-agent
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     ];
+
+    // Use cookies if available (needed for YouTube bot detection)
+    if (hasCookies) {
+      args.push('--cookies', cookiesPath);
+      console.log('🍪 Using cookies for YouTube auth');
+    }
 
     console.log(`📥 Downloading: ${url}`);
 
