@@ -12,9 +12,15 @@ function downloadVideo(url, outputDir) {
     const outputTemplate = path.join(outputDir, `${filename}.%(ext)s`);
 
     // Check for cookies file (bind-mounted at /data/cookies.txt, or local fallback)
-    const cookiePaths = ['/data/cookies.txt', path.join(outputDir, '..', 'cookies.txt')];
-    const cookiesPath = cookiePaths.find(p => fs.existsSync(p));
-    const hasCookies = !!cookiesPath;
+    const cookieSources = ['/data/cookies.txt', path.join(outputDir, '..', 'cookies.txt')];
+    const cookieSource = cookieSources.find(p => fs.existsSync(p));
+    let cookiesPath = null;
+
+    // Copy cookies to writable temp file (bind mount may be read-only)
+    if (cookieSource) {
+      cookiesPath = path.join(outputDir, `cookies-${filename}.txt`);
+      fs.copyFileSync(cookieSource, cookiesPath);
+    }
 
     const args = [
       url,
@@ -27,8 +33,8 @@ function downloadVideo(url, outputDir) {
       '--restrict-filenames',
       // Use Node.js as JS runtime (yt-dlp calls it 'node')
       '--js-runtimes', 'node',
-      // Use player clients less likely to trigger bot detection
-      '--extractor-args', 'youtube:player_client=mweb,ios',
+      // Use player clients that support cookies
+      '--extractor-args', 'youtube:player_client=mweb,web_creator',
       // Network flags
       '--force-ipv4',
       '--geo-bypass',
@@ -37,7 +43,7 @@ function downloadVideo(url, outputDir) {
     ];
 
     // Use cookies if available (needed for YouTube bot detection)
-    if (hasCookies) {
+    if (cookiesPath) {
       args.push('--cookies', cookiesPath);
       console.log('🍪 Using cookies for YouTube auth');
     }
@@ -59,6 +65,11 @@ function downloadVideo(url, outputDir) {
     });
 
     proc.on('close', (code) => {
+      // Clean up temp cookies file
+      if (cookiesPath && fs.existsSync(cookiesPath)) {
+        try { fs.unlinkSync(cookiesPath); } catch (_e) { /* ignore */ }
+      }
+
       if (code !== 0) {
         return reject(new Error(`yt-dlp failed (exit ${code}): ${errorOutput}`));
       }
