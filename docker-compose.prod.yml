@@ -5,6 +5,7 @@ services:
     image: ${IMAGE_FULL:-ghcr.io/itneutronsblog/devops-learning-web:latest}
     volumes:
       - video_data:/data/videos
+      - ./cookies.txt:/data/cookies.txt:ro
     environment:
       - NODE_ENV=production
       - PORT=3005

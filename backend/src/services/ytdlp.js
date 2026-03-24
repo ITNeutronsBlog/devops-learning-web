@@ -11,8 +11,10 @@ function downloadVideo(url, outputDir) {
     const filename = `${uuidv4()}`;
     const outputTemplate = path.join(outputDir, `${filename}.%(ext)s`);
 
-    const cookiesPath = path.join(outputDir, '..', 'cookies.txt');
-    const hasCookies = fs.existsSync(cookiesPath);
+    // Check for cookies file (bind-mounted at /data/cookies.txt, or local fallback)
+    const cookiePaths = ['/data/cookies.txt', path.join(outputDir, '..', 'cookies.txt')];
+    const cookiesPath = cookiePaths.find(p => fs.existsSync(p));
+    const hasCookies = !!cookiesPath;
 
     const args = [
       url,

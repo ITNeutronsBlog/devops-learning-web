@@ -30,3 +30,5 @@ docker-compose.override.yml
 # Logs
 *.log
 npm-debug.log*
+
+www.youtube.com_cookies.txt
