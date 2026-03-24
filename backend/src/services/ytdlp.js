@@ -38,6 +38,11 @@ function downloadVideo(url, outputDir) {
       // Network flags
       '--force-ipv4',
       '--geo-bypass',
+      // The best current combo to avoid bot detection: mobile clients
+      // Web client is the one that gets the "Sign in to confirm" wall
+      '--extractor-args', 'youtube:player_client=android,ios,mweb',
+      '--extractor-args', 'youtube:player_skip=web,web_creator',
+      '--sleep-requests', '1',
       // Browser user-agent
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     ];
@@ -45,6 +50,8 @@ function downloadVideo(url, outputDir) {
     // Use cookies if available (needed for YouTube bot detection)
     if (cookiesPath) {
       args.push('--cookies', cookiesPath);
+      // Optional: ignore cookie errors so it falls back to unauthenticated
+      args.push('--compat-options', 'no-keep-subscription');
       console.log('🍪 Using cookies for YouTube auth');
     }
 
