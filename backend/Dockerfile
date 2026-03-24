@@ -8,8 +8,8 @@ RUN npm ci --omit=dev
 FROM node:20-alpine
 WORKDIR /app
 
-# Install yt-dlp and curl (for health check)
-RUN apk add --no-cache curl python3 \
+# Install yt-dlp, ffmpeg (for yt-dlp merge), and curl (for health check)
+RUN apk add --no-cache curl python3 ffmpeg \
   && wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
   && chmod +x /usr/local/bin/yt-dlp
 

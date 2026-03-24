@@ -19,7 +19,13 @@ function downloadVideo(url, outputDir) {
       '--write-info-json',
       '--no-playlist',
       '--no-overwrites',
-      '--restrict-filenames'
+      '--restrict-filenames',
+      // Use Node.js as the JS runtime (already in the container)
+      '--js-runtimes', 'nodejs',
+      // Use multiple player clients to bypass YouTube bot detection
+      '--extractor-args', 'youtube:player_client=ios,web_creator',
+      // Look like a normal browser
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     ];
 
     console.log(`📥 Downloading: ${url}`);
