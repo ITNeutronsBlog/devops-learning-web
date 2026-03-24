@@ -46,13 +46,17 @@ const Player = {
         </a>
 
         <div class="player-wrapper" id="player-wrapper">
-          <video id="video-player" playsinline src="${video.s3_url}"></video>
+          <video id="video-player" playsinline preload="auto" src="${video.s3_url}"></video>
+          <div class="player-loading" id="player-loading">
+            <div class="player-spinner"></div>
+          </div>
           <div class="player-controls-overlay" id="player-controls">
             <button id="play-btn" title="Play/Pause (Space)">
               <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
               <svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
             </button>
             <div class="player-progress" id="progress-bar">
+              <div class="player-buffer-fill" id="buffer-fill"></div>
               <div class="player-progress-fill" id="progress-fill"></div>
             </div>
             <span class="player-time" id="time-display">0:00 / 0:00</span>
@@ -101,7 +105,7 @@ const Player = {
   initPlayer() {
     const videoEl = document.getElementById('video-player');
     Player.video = videoEl;
-    // Native MP4 — no HLS.js needed, browser handles range requests
+    // preload="auto" on the element tells browser to buffer aggressively
   },
 
   setupControls(videoData) {
@@ -113,6 +117,8 @@ const Player = {
     const pauseIcon = document.getElementById('pause-icon');
     const progressBar = document.getElementById('progress-bar');
     const progressFill = document.getElementById('progress-fill');
+    const bufferFill = document.getElementById('buffer-fill');
+    const loadingOverlay = document.getElementById('player-loading');
     const timeDisplay = document.getElementById('time-display');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
     const speedBtn = document.getElementById('speed-btn');
@@ -135,12 +141,31 @@ const Player = {
       pauseIcon.style.display = 'none';
     });
 
-    // Progress
+    // Progress + Buffer
     video.addEventListener('timeupdate', () => {
       if (video.duration) {
         progressFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
         timeDisplay.textContent = `${Library.formatDuration(video.currentTime)} / ${Library.formatDuration(video.duration)}`;
       }
+    });
+
+    // Buffer progress bar
+    video.addEventListener('progress', () => {
+      if (video.duration && video.buffered.length > 0) {
+        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+        bufferFill.style.width = `${(bufferedEnd / video.duration) * 100}%`;
+      }
+    });
+
+    // Loading spinner — show when buffering, hide when playing
+    video.addEventListener('waiting', () => {
+      loadingOverlay.classList.add('visible');
+    });
+    video.addEventListener('playing', () => {
+      loadingOverlay.classList.remove('visible');
+    });
+    video.addEventListener('canplay', () => {
+      loadingOverlay.classList.remove('visible');
     });
 
     progressBar?.addEventListener('click', (e) => {
