@@ -18,7 +18,10 @@ function getClient() {
       credentials: {
         accessKeyId: process.env.R2_ACCESS_KEY_ID,
         secretAccessKey: process.env.R2_SECRET_ACCESS_KEY
-      }
+      },
+      // Disable automatic checksum — R2 doesn't support it and it breaks CORS
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED'
     });
   }
   return s3Client;
