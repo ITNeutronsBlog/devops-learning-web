@@ -46,6 +46,9 @@ if (fs.existsSync(FRONTEND_DIR)) {
 app.use('/api/health', healthRoutes);
 app.use('/api', videoRoutes);
 
+// Serve local videos backward compatibility
+app.use('/videos', express.static(UPLOADS_DIR));
+
 // SPA fallback — serve index.html for non-API routes
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {

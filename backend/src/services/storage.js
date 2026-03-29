@@ -6,7 +6,7 @@ const path = require('path');
 // Initialize R2 client
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_BUCKET = process.env.R2_BUCKET_NAME || 'devops-videos';
-const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL || '';
+const R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '');
 
 let s3Client = null;
 

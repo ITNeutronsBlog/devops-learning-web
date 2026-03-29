@@ -128,7 +128,11 @@ const Player = {
 
     // Play/Pause
     const togglePlay = () => {
-      if (video.paused) video.play(); else video.pause();
+      if (video.paused) {
+        video.play().catch(err => App.showToast('Unable to play video: ' + err.message, 'error'));
+      } else {
+        video.pause();
+      }
     };
     playBtn?.addEventListener('click', togglePlay);
 
@@ -139,6 +143,20 @@ const Player = {
     video.addEventListener('pause', () => {
       playIcon.style.display = 'block';
       pauseIcon.style.display = 'none';
+    });
+
+    video.addEventListener('error', () => {
+      let errorMsg = 'Unknown video error';
+      if (video.error) {
+        switch (video.error.code) {
+          case 1: errorMsg = 'Loading aborted'; break;
+          case 2: errorMsg = 'Network error while loading'; break;
+          case 3: errorMsg = 'Video decoding failed'; break;
+          case 4: errorMsg = 'Video format unsupported or source unreachable'; break;
+        }
+      }
+      App.showToast(`Error: ${errorMsg}`, 'error');
+      loadingOverlay.classList.remove('visible');
     });
 
     // Progress + Buffer
@@ -233,7 +251,11 @@ const Player = {
     switch (e.key) {
     case ' ':
       e.preventDefault();
-      if (Player.video.paused) Player.video.play(); else Player.video.pause();
+      if (Player.video.paused) {
+        Player.video.play().catch(err => App.showToast('Unable to play video: ' + err.message, 'error'));
+      } else {
+        Player.video.pause();
+      }
       break;
     case 'ArrowRight':
       Player.video.currentTime = Math.min(Player.video.currentTime + 10, Player.video.duration);
