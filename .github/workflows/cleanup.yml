@@ -6,7 +6,7 @@ on:
 
 jobs:
   cleanup-server:
-    runs-on: [self-hosted, SGP-JUMP-SSH-SERVER]
+    runs-on: self-hosted
     steps:
       - name: Clean up Docker on server
         uses: appleboy/ssh-action@v1.0.3

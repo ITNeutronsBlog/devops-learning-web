@@ -7,7 +7,7 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: [self-hosted, SGP-JUMP-SSH-SERVER]
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
