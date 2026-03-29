@@ -10,7 +10,7 @@ const Player = {
     const main = document.getElementById('main-content');
 
     main.innerHTML = `
-      <div class="player-page">
+      <div class="player-page animate-fade-in-up">
         <a href="#/" class="back-btn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
           Back to Library
@@ -25,7 +25,7 @@ const Player = {
 
       if (video.status !== 'ready' || !video.s3_url) {
         main.innerHTML = `
-          <div class="player-page">
+          <div class="player-page animate-fade-in-up">
             <a href="#/" class="back-btn">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
               Back to Library

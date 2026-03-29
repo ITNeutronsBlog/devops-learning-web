@@ -9,10 +9,11 @@ const Library = {
   render() {
     const main = document.getElementById('main-content');
     main.innerHTML = `
-      <div class="page-header">
-        <h1 class="page-title">Video Library</h1>
-        <p class="page-subtitle">Your DevOps learning videos</p>
-      </div>
+      <div class="animate-fade-in-up">
+        <div class="page-header">
+          <h1 class="page-title">Video Library</h1>
+          <p class="page-subtitle">Your DevOps learning videos</p>
+        </div>
 
       <div class="controls-bar">
         <div class="search-box">
@@ -34,6 +35,7 @@ const Library = {
 
       <div class="video-grid" id="video-grid">
         <div class="loading-screen"><div class="spinner"></div><span>Loading videos...</span></div>
+      </div>
       </div>
     `;
 
@@ -135,9 +137,14 @@ const Library = {
       : `<div class="placeholder-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="3"/><polygon points="10,8 10,16 16,12"/></svg></div>`;
 
     return `
-      <div class="video-card" data-id="${video.id}">
+      <div class="video-card glass-panel" data-id="${video.id}">
         <div class="card-thumbnail">
           ${thumbnail}
+          <div class="card-play-overlay">
+            <div class="play-circle">
+              <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="7,5 19,12 7,19"/></svg>
+            </div>
+          </div>
           ${duration ? `<span class="card-duration">${duration}</span>` : ''}
           <span class="card-status-badge ${video.status}">${video.status}</span>
         </div>

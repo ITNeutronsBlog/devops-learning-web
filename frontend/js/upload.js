@@ -8,7 +8,7 @@ const Upload = {
   render() {
     const main = document.getElementById('main-content');
     main.innerHTML = `
-      <div class="upload-page">
+      <div class="upload-page animate-fade-in-up">
         <div class="page-header">
           <h1 class="page-title">Upload Video</h1>
           <p class="page-subtitle">Upload a video file for streaming</p>
@@ -176,7 +176,7 @@ const Download = {
   render() {
     const main = document.getElementById('main-content');
     main.innerHTML = `
-      <div class="download-page">
+      <div class="download-page animate-fade-in-up">
         <div class="page-header">
           <h1 class="page-title">Download from YouTube</h1>
           <p class="page-subtitle">Paste a YouTube URL to download and stream</p>
