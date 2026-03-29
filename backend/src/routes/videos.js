@@ -57,7 +57,7 @@ router.get('/videos/:id', (req, res) => {
 // ———————————————————————————————————————
 // GET /api/videos/:id/stream — Stream video via proxy (Bypass Office Firewall)
 // ———————————————————————————————————————
-router.get('/videos/:id/stream', async (req, res, next) => {
+router.get('/videos/:id/stream', async (req, res) => {
   try {
     const manager = getManager(req);
     const video = manager.getVideo(req.params.id);
@@ -68,13 +68,13 @@ router.get('/videos/:id/stream', async (req, res, next) => {
       try {
         const range = req.headers.range;
         const response = await streamFromR2(video.s3_key, range);
-        
+
         // Forward R2 headers explicitly
         if (response.contentLength) res.setHeader('Content-Length', response.contentLength);
         if (response.contentType) res.setHeader('Content-Type', response.contentType);
         if (response.acceptRanges) res.setHeader('Accept-Ranges', response.acceptRanges);
         if (response.contentRange) res.setHeader('Content-Range', response.contentRange);
-        
+
         res.status(response.status || (range ? 206 : 200));
 
         // Let Express pipe the S3 readStream to the browser
@@ -93,16 +93,16 @@ router.get('/videos/:id/stream', async (req, res, next) => {
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({ error: 'Local video file missing' });
       }
-      
+
       const stat = fs.statSync(filePath);
       const range = req.headers.range;
-      
+
       if (range) {
-        const parts = range.replace(/bytes=/, "").split("-");
+        const parts = range.replace(/bytes=/, '').split('-');
         const start = parseInt(parts[0], 10);
         const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
         const chunksize = (end - start) + 1;
-        
+
         const file = fs.createReadStream(filePath, { start, end });
         res.writeHead(206, {
           'Content-Range': `bytes ${start}-${end}/${stat.size}`,
