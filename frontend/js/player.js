@@ -23,7 +23,7 @@ const Player = {
       const video = await API.getVideo(videoId);
       if (!video) return main.innerHTML = '<p>Video not found</p>';
 
-      if (video.status !== 'ready' || !video.s3_url) {
+      if (video.status !== 'ready') {
         main.innerHTML = `
           <div class="player-page animate-fade-in-up">
             <a href="#/" class="back-btn">
@@ -46,7 +46,7 @@ const Player = {
         </a>
 
         <div class="player-wrapper" id="player-wrapper">
-          <video id="video-player" playsinline preload="auto" src="${video.s3_url}"></video>
+          <video id="video-player" playsinline preload="auto" src="/api/videos/${video.id}/stream"></video>
           <div class="player-loading" id="player-loading">
             <div class="player-spinner"></div>
           </div>

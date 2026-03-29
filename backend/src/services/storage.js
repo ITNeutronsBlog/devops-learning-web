@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
 const path = require('path');
@@ -122,4 +122,35 @@ function getPublicUrl(key) {
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
-module.exports = { uploadToR2, deleteFromR2, getPublicUrl, isConfigured, getPresignedUploadUrl };
+/**
+ * Stream an object from R2 with optional byte range support
+ * @param {string} key - S3 object key
+ * @param {string} rangeHeader - HTTP Range header (e.g. 'bytes=0-1024')
+ */
+async function streamFromR2(key, rangeHeader) {
+  const client = getClient();
+  if (!client) throw new Error('R2 storage is not configured');
+
+  const params = {
+    Bucket: R2_BUCKET,
+    Key: key
+  };
+
+  if (rangeHeader) {
+    params.Range = rangeHeader;
+  }
+
+  const command = new GetObjectCommand(params);
+  const response = await client.send(command);
+
+  return {
+    contentLength: response.ContentLength,
+    contentType: response.ContentType,
+    contentRange: response.ContentRange,
+    acceptRanges: response.AcceptRanges,
+    body: response.Body,
+    status: response.$metadata.httpStatusCode
+  };
+}
+
+module.exports = { uploadToR2, deleteFromR2, getPublicUrl, isConfigured, getPresignedUploadUrl, streamFromR2 };

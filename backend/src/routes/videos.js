@@ -3,7 +3,7 @@ const router = express.Router();
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const VideoManager = require('../services/videoManager');
-const { getPresignedUploadUrl, isConfigured } = require('../services/storage');
+const { getPresignedUploadUrl, isConfigured, streamFromR2 } = require('../services/storage');
 const { downloadVideo, isYtdlpAvailable } = require('../services/ytdlp');
 
 // Helper to get VideoManager instance
@@ -52,6 +52,81 @@ router.get('/videos/:id', (req, res) => {
   const video = manager.getVideo(req.params.id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   res.json(video);
+});
+
+// ———————————————————————————————————————
+// GET /api/videos/:id/stream — Stream video via proxy (Bypass Office Firewall)
+// ———————————————————————————————————————
+router.get('/videos/:id/stream', async (req, res, next) => {
+  try {
+    const manager = getManager(req);
+    const video = manager.getVideo(req.params.id);
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    if (video.s3_key && isConfigured()) {
+      // 1. Stream from R2
+      try {
+        const range = req.headers.range;
+        const response = await streamFromR2(video.s3_key, range);
+        
+        // Forward R2 headers explicitly
+        if (response.contentLength) res.setHeader('Content-Length', response.contentLength);
+        if (response.contentType) res.setHeader('Content-Type', response.contentType);
+        if (response.acceptRanges) res.setHeader('Accept-Ranges', response.acceptRanges);
+        if (response.contentRange) res.setHeader('Content-Range', response.contentRange);
+        
+        res.status(response.status || (range ? 206 : 200));
+
+        // Let Express pipe the S3 readStream to the browser
+        response.body.pipe(res);
+      } catch (err) {
+        if (err.name === 'NoSuchKey') {
+          return res.status(404).json({ error: 'Video file missing from cloud storage' });
+        }
+        throw err;
+      }
+    } else if (video.original_path || video.filename) {
+      // 2. Fallback: Stream local legacy file
+      const UPLOADS_DIR = req.app.locals.UPLOADS_DIR;
+      const filePath = video.original_path || path.join(UPLOADS_DIR, video.filename);
+      const fs = require('fs');
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Local video file missing' });
+      }
+      
+      const stat = fs.statSync(filePath);
+      const range = req.headers.range;
+      
+      if (range) {
+        const parts = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        const chunksize = (end - start) + 1;
+        
+        const file = fs.createReadStream(filePath, { start, end });
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunksize,
+          'Content-Type': 'video/mp4'
+        });
+        file.pipe(res);
+      } else {
+        res.writeHead(200, {
+          'Content-Length': stat.size,
+          'Content-Type': 'video/mp4'
+        });
+        fs.createReadStream(filePath).pipe(res);
+      }
+    } else {
+      res.status(400).json({ error: 'Video source not available' });
+    }
+  } catch (err) {
+    console.error('Streaming error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Streaming proxy failed' });
+    }
+  }
 });
 
 // ———————————————————————————————————————
