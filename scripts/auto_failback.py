@@ -405,67 +405,95 @@ def execute_failback(config, state, force=False):
         pg_path = "/var/snap/docker/common/var-lib-docker/volumes/devops-learning-web_pg_data/_data"
         result_warn(f"Using default path: {pg_path}")
 
-    # ── Step 6: Sync data from DR → Primary via pg_basebackup ──
+    # ── Step 6: Sync data from DR → Primary via pg_dump/pg_restore ──
     step(6, total_steps, "Syncing data from DR → Primary")
     print(f"  {C.YELLOW}This may take several minutes...{C.END}")
 
-    # Clean primary PG data
+    # Strategy: pg_dump on DR (local) → SCP to primary → restore
+    # This is more reliable than pg_basebackup across firewalls
+
+    # 6a: Dump the database on DR (local Docker)
+    print(f"  {C.YELLOW}  6a. Dumping database on DR...{C.END}")
+    ok1, dump_out, dump_err = run_cmd([
+        "sudo", "docker", "exec", "devops-learning-db",
+        "pg_dumpall", "-U", "devops", "--clean", "--if-exists",
+        "-f", "/tmp/failback_dump.sql"
+    ], timeout=300)
+
+    if not ok1:
+        result_fail(f"pg_dumpall failed: {dump_err}")
+        state.set_status("FAILED")
+        return False
+    result_pass("Database dumped on DR")
+
+    # 6b: Copy dump file from Docker container to host
+    print(f"  {C.YELLOW}  6b. Extracting dump from container...{C.END}")
+    run_cmd("sudo docker cp devops-learning-db:/tmp/failback_dump.sql /tmp/failback_dump.sql", timeout=60)
+    ok_size, size_out, _ = run_cmd("ls -lh /tmp/failback_dump.sql | awk '{print $5}'", timeout=5)
+    if ok_size:
+        result_pass(f"Dump file size: {size_out.strip()}")
+
+    # 6c: SCP dump to primary server
+    print(f"  {C.YELLOW}  6c. Copying dump to primary server...{C.END}")
+    scp_cmd = ["scp", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+    if ssh_key:
+        scp_cmd.extend(["-i", ssh_key])
+    scp_cmd.extend(["/tmp/failback_dump.sql", f"{ssh_user}@{ssh_host}:/tmp/"])
+    ok2, _, scp_err = run_cmd(scp_cmd, timeout=300)
+    if not ok2:
+        result_fail(f"SCP to primary failed: {scp_err}")
+        state.set_status("FAILED")
+        return False
+    result_pass("Dump copied to primary")
+
+    # 6d: Start primary PostgreSQL container (fresh)
+    print(f"  {C.YELLOW}  6d. Starting primary PostgreSQL...{C.END}")
     run_remote(ssh_host, ssh_user, ssh_key,
-               f"sudo rm -rf {pg_path}/* && sudo mkdir -p {pg_path}")
+               "cd /opt/devops-learning-web && "
+               "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres",
+               timeout=60)
+    # Wait for PG to be ready
+    pg_ready = False
+    for attempt in range(1, 13):
+        ok_ready, ready_out, _ = run_remote(
+            ssh_host, ssh_user, ssh_key,
+            "docker exec devops-learning-db pg_isready -U devops -d devops_learning 2>/dev/null"
+        )
+        if ok_ready and "accepting" in ready_out:
+            pg_ready = True
+            break
+        time.sleep(5)
+    if not pg_ready:
+        result_fail("Primary PostgreSQL failed to start")
+        state.set_status("FAILED")
+        return False
+    result_pass("Primary PostgreSQL is running")
 
-    # pg_basebackup from DR to primary
-    # DR PG is on port 5432, we need primary to pull from DR
-    # Alternative: use pg_dump/pg_restore for cleaner approach
-    ok, out, err = run_remote(
+    # 6e: Copy dump into container and restore
+    print(f"  {C.YELLOW}  6e. Restoring database on primary...{C.END}")
+    run_remote(ssh_host, ssh_user, ssh_key,
+               "docker cp /tmp/failback_dump.sql devops-learning-db:/tmp/failback_dump.sql",
+               timeout=60)
+    ok3, restore_out, restore_err = run_remote(
         ssh_host, ssh_user, ssh_key,
-        f"pg_basebackup -h 3.7.200.91 -p 5432 -U replicator "
-        f"-D {pg_path} --checkpoint=fast --wal-method=stream --progress --verbose "
-        f"2>&1 || echo 'BASEBACKUP_FAILED'",
-        timeout=600
+        "docker exec devops-learning-db psql -U devops -d devops_learning "
+        "-f /tmp/failback_dump.sql 2>&1 | tail -5",
+        timeout=300
     )
-    if ok and "BASEBACKUP_FAILED" not in out:
-        result_pass("Data synced from DR → Primary")
+    if ok3:
+        result_pass("Database restored on primary!")
+        log.info(f"Restore output: {restore_out}")
     else:
-        # Fallback: use pg_dump/pg_restore
-        result_warn(f"pg_basebackup failed: {err}")
-        print(f"  {C.YELLOW}Trying pg_dump/pg_restore fallback...{C.END}")
+        result_fail(f"Restore failed: {restore_err}")
+        state.set_status("FAILED")
+        return False
 
-        # Dump from DR
-        ok1, dump_out, dump_err = run_cmd([
-            "sudo", "docker", "exec", "devops-learning-db",
-            "pg_dump", "-U", "devops", "-d", "devops_learning",
-            "--format=custom", "--file=/tmp/failback_dump.custom"
-        ], timeout=300)
-
-        if ok1:
-            # Copy dump to primary
-            run_cmd(f"sudo docker cp devops-learning-db:/tmp/failback_dump.custom /tmp/failback_dump.custom", timeout=60)
-
-            scp_cmd = ["scp", "-o", "StrictHostKeyChecking=no"]
-            if ssh_key:
-                scp_cmd.extend(["-i", ssh_key])
-            scp_cmd.extend(["/tmp/failback_dump.custom", f"{ssh_user}@{ssh_host}:/tmp/"])
-            run_cmd(scp_cmd, timeout=300)
-
-            # Start primary PG and restore
-            run_remote(ssh_host, ssh_user, ssh_key,
-                      "docker start devops-learning-db && sleep 10", timeout=30)
-            ok2, _, restore_err = run_remote(
-                ssh_host, ssh_user, ssh_key,
-                "docker exec devops-learning-db pg_restore -U devops -d devops_learning "
-                "--clean --if-exists /tmp/failback_dump.custom 2>&1",
-                timeout=300
-            )
-            if ok2:
-                result_pass("Data restored via pg_dump/pg_restore")
-            else:
-                result_fail(f"Restore failed: {restore_err}")
-                state.set_status("FAILED")
-                return False
-        else:
-            result_fail(f"pg_dump failed: {dump_err}")
-            state.set_status("FAILED")
-            return False
+    # Cleanup dump files
+    run_cmd("sudo rm -f /tmp/failback_dump.sql", timeout=5)
+    run_remote(ssh_host, ssh_user, ssh_key,
+               "rm -f /tmp/failback_dump.sql && "
+               "docker exec devops-learning-db rm -f /tmp/failback_dump.sql",
+               timeout=10)
 
     # ── Step 7: Remove standby.signal on primary ──
     step(7, total_steps, "Configuring primary as standalone")
