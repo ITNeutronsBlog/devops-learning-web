@@ -337,6 +337,7 @@ def execute_failback(config, state, force=False):
     ssh_host = primary["ssh_host"]
     ssh_key = primary.get("ssh_key", "")
     compose_path = dr["compose_path"]
+    primary_compose = primary.get("compose_path", "/home/ubuntu/devops-learning-web")
 
     total_steps = 10
 
@@ -449,7 +450,7 @@ def execute_failback(config, state, force=False):
     # 6d: Start primary PostgreSQL container (fresh)
     print(f"  {C.YELLOW}  6d. Starting primary PostgreSQL...{C.END}")
     run_remote(ssh_host, ssh_user, ssh_key,
-               "cd /opt/devops-learning-web && "
+               f"cd {primary_compose} && "
                "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres",
                timeout=60)
     # Wait for PG to be ready
@@ -513,7 +514,7 @@ def execute_failback(config, state, force=False):
     step(8, total_steps, "Starting primary application stack")
     ok, out, err = run_remote(
         ssh_host, ssh_user, ssh_key,
-        "cd /opt/devops-learning-web && "
+        f"cd {primary_compose} && "
         "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d",
         timeout=120
     )

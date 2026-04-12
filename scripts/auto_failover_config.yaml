@@ -8,6 +8,7 @@ primary:
   ssh_host: "178.128.55.28"
   ssh_user: "ubuntu"
   ssh_key: ""  # Path to SSH key for fencing (optional)
+  compose_path: "/home/ubuntu/devops-learning-web"
 
 # DR server (AWS Mumbai)
 dr:
