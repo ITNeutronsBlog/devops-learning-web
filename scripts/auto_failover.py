@@ -234,7 +234,7 @@ def check_primary_health(config):
     # Check 2: PostgreSQL replication status (optional, checks if DR is receiving)
     try:
         result = subprocess.run(
-            ["docker", "exec", "devops-learning-db",
+            ["sudo", "docker", "exec", "devops-learning-db",
              "psql", "-U", "devops", "-d", "devops_learning",
              "-t", "-c", "SELECT 1;"],
             capture_output=True, text=True, timeout=10
@@ -358,7 +358,7 @@ def execute_failover(config, state):
         log.info("3/6 — Promoting PostgreSQL standby to primary...")
         try:
             result = subprocess.run(
-                ["docker", "exec", "-u", "postgres", "devops-learning-db",
+                ["sudo", "docker", "exec", "-u", "postgres", "devops-learning-db",
                  "pg_ctl", "promote", "-D", "/var/lib/postgresql/data"],
                 capture_output=True, text=True, timeout=30
             )
@@ -369,7 +369,7 @@ def execute_failover(config, state):
                 log.warning(f"  ⚠️ Promotion output: {result.stderr}")
                 # Check if PG is already a primary (not in recovery)
                 check = subprocess.run(
-                    ["docker", "exec", "devops-learning-db",
+                    ["sudo", "docker", "exec", "devops-learning-db",
                      "psql", "-U", "devops", "-d", "devops_learning",
                      "-t", "-c", "SELECT pg_is_in_recovery();"],
                     capture_output=True, text=True, timeout=10
@@ -400,7 +400,7 @@ def execute_failover(config, state):
                 "-f", f"{compose_path}/docker-compose.dr.yml",
             ]
             result = subprocess.run(
-                ["docker", "compose"] + compose_files + ["up", "-d"],
+                ["sudo", "docker", "compose"] + compose_files + ["up", "-d"],
                 capture_output=True, text=True, timeout=120, cwd=compose_path
             )
             if result.returncode == 0:
