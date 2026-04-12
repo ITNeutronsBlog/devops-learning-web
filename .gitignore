@@ -32,3 +32,12 @@ docker-compose.override.yml
 npm-debug.log*
 
 www.youtube.com_cookies.txt
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfplan
+terraform/terraform.tfvars
+terraform/.terraform.tfstate.lock.info

@@ -1,0 +1,31 @@
+# ──────────────────────────────────────
+# DevOps Learning Hub — DR Server Config
+# Copy to terraform.tfvars and fill in values
+# ──────────────────────────────────────
+project    = "devops-learning"
+aws_region = "ap-south-1" # Mumbai
+
+# Your current primary server
+primary_server_ip = "YOUR_PRIMARY_SERVER_IP"
+
+# SSH access — restrict to your IP!
+allowed_ssh_cidrs = ["YOUR_HOME_IP/32"]
+
+# EC2
+instance_type  = "t3.small"
+key_pair_name  = "your-aws-key-pair-name"
+pg_volume_size = 20
+
+# Secrets — NEVER commit real values!
+# Better: use environment variables:
+#   export TF_VAR_postgres_password="your_password"
+#   export TF_VAR_replication_password="your_password"
+postgres_password    = ""
+replication_password = ""
+r2_account_id        = ""
+r2_access_key_id     = ""
+r2_secret_access_key = ""
+r2_bucket_name       = "devops-videos"
+r2_public_url        = ""
+ghcr_token           = ""
+alert_email          = "your@email.com"

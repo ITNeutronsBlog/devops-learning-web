@@ -4,8 +4,8 @@ const os = require('os');
 const { execSync } = require('child_process');
 const { isConfigured } = require('../services/storage');
 
-router.get('/', (req, res) => {
-  const db = req.app.locals.db;
+router.get('/', async (req, res) => {
+  const pool = req.app.locals.pool;
 
   // Check yt-dlp
   let ytdlpVersion = 'not found';
@@ -15,13 +15,31 @@ router.get('/', (req, res) => {
     // yt-dlp not available
   }
 
-  // Video stats
-  const stats = db.prepare(`
-    SELECT
-      COUNT(*) as total,
-      SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready
-    FROM videos
-  `).get();
+  // Video stats (async PostgreSQL query)
+  let stats = { total: 0, ready: 0 };
+  let dbStatus = 'disconnected';
+  let poolInfo = {};
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) as ready
+      FROM videos
+    `);
+    stats = {
+      total: parseInt(result.rows[0].total, 10),
+      ready: parseInt(result.rows[0].ready || 0, 10)
+    };
+    dbStatus = 'connected';
+    poolInfo = {
+      totalCount: pool.totalCount,
+      idleCount: pool.idleCount,
+      waitingCount: pool.waitingCount
+    };
+  } catch (err) {
+    dbStatus = `error: ${err.message}`;
+  }
 
   res.json({
     status: 'ok',
@@ -35,6 +53,11 @@ router.get('/', (req, res) => {
         usage: `${((1 - os.freemem() / os.totalmem()) * 100).toFixed(1)}%`
       },
       cpus: os.cpus().length
+    },
+    database: {
+      type: 'PostgreSQL',
+      status: dbStatus,
+      pool: poolInfo
     },
     tools: {
       ytdlp: ytdlpVersion

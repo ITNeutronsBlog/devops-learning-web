@@ -6,10 +6,10 @@ const VideoManager = require('../services/videoManager');
 const { getPresignedUploadUrl, isConfigured, streamFromR2 } = require('../services/storage');
 const { downloadVideo, isYtdlpAvailable } = require('../services/ytdlp');
 
-// Helper to get VideoManager instance
+// Helper to get VideoManager instance (now uses pool instead of db)
 function getManager(req) {
   if (!req.app.locals._videoManager) {
-    req.app.locals._videoManager = new VideoManager(req.app.locals.db, {
+    req.app.locals._videoManager = new VideoManager(req.app.locals.pool, {
       UPLOADS_DIR: req.app.locals.UPLOADS_DIR
     });
   }
@@ -19,39 +19,51 @@ function getManager(req) {
 // ———————————————————————————————————————
 // GET /api/videos — List all videos
 // ———————————————————————————————————————
-router.get('/videos', (req, res) => {
-  const manager = getManager(req);
-  const { search, category, status, sort, order, page, limit } = req.query;
+router.get('/videos', async (req, res, next) => {
+  try {
+    const manager = getManager(req);
+    const { search, category, status, sort, order, page, limit } = req.query;
 
-  const result = manager.listVideos({
-    search,
-    category,
-    status,
-    sort,
-    order,
-    page: parseInt(page) || 1,
-    limit: parseInt(limit) || 20
-  });
+    const result = await manager.listVideos({
+      search,
+      category,
+      status,
+      sort,
+      order,
+      page: parseInt(page) || 1,
+      limit: parseInt(limit) || 20
+    });
 
-  res.json(result);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ———————————————————————————————————————
 // GET /api/categories — List categories
 // ———————————————————————————————————————
-router.get('/categories', (req, res) => {
-  const manager = getManager(req);
-  res.json(manager.getCategories());
+router.get('/categories', async (req, res, next) => {
+  try {
+    const manager = getManager(req);
+    res.json(await manager.getCategories());
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ———————————————————————————————————————
 // GET /api/videos/:id — Get video details
 // ———————————————————————————————————————
-router.get('/videos/:id', (req, res) => {
-  const manager = getManager(req);
-  const video = manager.getVideo(req.params.id);
-  if (!video) return res.status(404).json({ error: 'Video not found' });
-  res.json(video);
+router.get('/videos/:id', async (req, res, next) => {
+  try {
+    const manager = getManager(req);
+    const video = await manager.getVideo(req.params.id);
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+    res.json(video);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ———————————————————————————————————————
@@ -60,7 +72,7 @@ router.get('/videos/:id', (req, res) => {
 router.get('/videos/:id/stream', async (req, res) => {
   try {
     const manager = getManager(req);
-    const video = manager.getVideo(req.params.id);
+    const video = await manager.getVideo(req.params.id);
     if (!video) return res.status(404).json({ error: 'Video not found' });
 
     if (video.s3_key && isConfigured()) {
@@ -163,7 +175,7 @@ router.post('/videos/presign', async (req, res, next) => {
 // POST /api/videos/register — Register video in DB after direct R2 upload
 // Called by the browser after the file has been uploaded to R2
 // ———————————————————————————————————————
-router.post('/videos/register', (req, res, next) => {
+router.post('/videos/register', async (req, res, next) => {
   try {
     const { id, s3Key, publicUrl, filename, fileSize, title, description, category, tags } = req.body;
 
@@ -171,26 +183,27 @@ router.post('/videos/register', (req, res, next) => {
       return res.status(400).json({ error: 'id and s3Key are required' });
     }
 
-    const manager = getManager(req);
+    const pool = req.app.locals.pool;
 
-    manager.db.prepare(`
+    await pool.query(`
       INSERT INTO videos (id, title, description, filename, original_path, file_size, category, tags, status, s3_key, s3_url)
-      VALUES (@id, @title, @description, @filename, @original_path, @file_size, @category, @tags, @status, @s3_key, @s3_url)
-    `).run({
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [
       id,
-      title: title || filename || 'Untitled',
-      description: description || '',
-      filename: filename || `${id}.mp4`,
-      original_path: '',
-      file_size: fileSize || 0,
-      category: category || 'uncategorized',
-      tags: JSON.stringify(tags || []),
-      status: 'ready',
-      s3_key: s3Key,
-      s3_url: publicUrl || ''
-    });
+      title || filename || 'Untitled',
+      description || '',
+      filename || `${id}.mp4`,
+      '',
+      fileSize || 0,
+      category || 'uncategorized',
+      JSON.stringify(tags || []),
+      'ready',
+      s3Key,
+      publicUrl || ''
+    ]);
 
-    const video = manager.getVideo(id);
+    const manager = getManager(req);
+    const video = await manager.getVideo(id);
     res.status(201).json(video);
   } catch (err) {
     next(err);
@@ -231,7 +244,7 @@ router.post('/videos/download', async (req, res, next) => {
     );
 
     // Update source URL
-    req.app.locals.db.prepare('UPDATE videos SET source_url = ? WHERE id = ?').run(url, video.id);
+    await req.app.locals.pool.query('UPDATE videos SET source_url = $1 WHERE id = $2', [url, video.id]);
 
     res.status(201).json({ ...video, source_url: url });
   } catch (err) {
@@ -242,11 +255,15 @@ router.post('/videos/download', async (req, res, next) => {
 // ———————————————————————————————————————
 // PUT /api/videos/:id — Update metadata
 // ———————————————————————————————————————
-router.put('/videos/:id', (req, res) => {
-  const manager = getManager(req);
-  const video = manager.updateVideo(req.params.id, req.body);
-  if (!video) return res.status(404).json({ error: 'Video not found' });
-  res.json(video);
+router.put('/videos/:id', async (req, res, next) => {
+  try {
+    const manager = getManager(req);
+    const video = await manager.updateVideo(req.params.id, req.body);
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+    res.json(video);
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ———————————————————————————————————————

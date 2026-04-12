@@ -1,56 +1,54 @@
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 
-function initDatabase(dbPath) {
-  const db = new Database(dbPath);
+/**
+ * Initialize PostgreSQL connection pool and ensure schema exists.
+ * Returns a pg.Pool instance for use throughout the application.
+ */
+async function initDatabase() {
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+  });
 
-  // Enable WAL mode for better concurrent performance
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  // Verify connectivity
+  const client = await pool.connect();
+  try {
+    // Create videos table with PostgreSQL-native types
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS videos (
+        id            TEXT PRIMARY KEY,
+        title         TEXT NOT NULL,
+        description   TEXT DEFAULT '',
+        filename      TEXT NOT NULL,
+        original_path TEXT DEFAULT '',
+        file_size     BIGINT,
+        status        TEXT DEFAULT 'ready',
+        category      TEXT DEFAULT 'uncategorized',
+        tags          JSONB DEFAULT '[]'::jsonb,
+        s3_key        TEXT,
+        s3_url        TEXT,
+        source_url    TEXT,
+        duration      DOUBLE PRECISION,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
 
-  // Create videos table (includes original_path for backward compat)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS videos (
-      id            TEXT PRIMARY KEY,
-      title         TEXT NOT NULL,
-      description   TEXT DEFAULT '',
-      filename      TEXT NOT NULL,
-      original_path TEXT DEFAULT '',
-      file_size     INTEGER,
-      status        TEXT DEFAULT 'ready',
-      category      TEXT DEFAULT 'uncategorized',
-      tags          TEXT DEFAULT '[]',
-      s3_key        TEXT,
-      s3_url        TEXT,
-      source_url    TEXT,
-      duration      REAL,
-      created_at    TEXT DEFAULT (datetime('now')),
-      updated_at    TEXT DEFAULT (datetime('now'))
-    );
-  `);
+    // Create indexes for common queries
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+      CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category);
+      CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
+    `);
 
-  // Create index for common queries
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
-    CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category);
-    CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
-  `);
-
-  // Migrate: add any missing columns for existing databases
-  const columns = db.prepare('PRAGMA table_info(videos)').all().map(c => c.name);
-  const migrations = [
-    { col: 's3_key', sql: 'ALTER TABLE videos ADD COLUMN s3_key TEXT' },
-    { col: 's3_url', sql: 'ALTER TABLE videos ADD COLUMN s3_url TEXT' },
-    { col: 'source_url', sql: 'ALTER TABLE videos ADD COLUMN source_url TEXT' }
-  ];
-  for (const m of migrations) {
-    if (!columns.includes(m.col)) {
-      db.exec(m.sql);
-      console.log(`📦 Migrated: added ${m.col} column`);
-    }
+    console.log('📦 PostgreSQL database initialized');
+  } finally {
+    client.release();
   }
 
-  console.log('📦 Database initialized at:', dbPath);
-  return db;
+  return pool;
 }
 
 module.exports = { initDatabase };

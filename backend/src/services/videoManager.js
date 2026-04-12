@@ -4,44 +4,63 @@ const fs = require('fs');
 const { uploadToR2, deleteFromR2, isConfigured } = require('./storage');
 
 class VideoManager {
-  constructor(db, dirs) {
-    this.db = db;
+  constructor(pool, dirs) {
+    this.pool = pool;
     this.uploadsDir = dirs.UPLOADS_DIR;
   }
 
   /**
    * List videos with filtering, search, sort, and pagination
    */
-  listVideos({ search, category, status, sort = 'created_at', order = 'desc', page = 1, limit = 20 }) {
-    let where = [];
-    let params = {};
+  async listVideos({ search, category, status, sort = 'created_at', order = 'desc', page = 1, limit = 20 }) {
+    const conditions = [];
+    const params = [];
+    let paramIndex = 1;
 
     if (search) {
-      where.push('(title LIKE @search OR description LIKE @search)');
-      params.search = `%${search}%`;
+      conditions.push(`(title ILIKE $${paramIndex} OR description ILIKE $${paramIndex})`);
+      params.push(`%${search}%`);
+      paramIndex++;
     }
     if (category && category !== 'all') {
-      where.push('category = @category');
-      params.category = category;
+      conditions.push(`category = $${paramIndex}`);
+      params.push(category);
+      paramIndex++;
     }
     if (status) {
-      where.push('status = @status');
-      params.status = status;
+      conditions.push(`status = $${paramIndex}`);
+      params.push(status);
+      paramIndex++;
     }
 
-    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Whitelist sort columns to prevent SQL injection
     const allowedSorts = ['created_at', 'title', 'duration', 'file_size'];
     const sortColumn = allowedSorts.includes(sort) ? sort : 'created_at';
     const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
     const offset = (page - 1) * limit;
 
-    const total = this.db.prepare(`SELECT COUNT(*) as count FROM videos ${whereClause}`).get(params).count;
-    const videos = this.db.prepare(
-      `SELECT * FROM videos ${whereClause} ORDER BY ${sortColumn} ${sortOrder} LIMIT @limit OFFSET @offset`
-    ).all({ ...params, limit, offset });
+    // Count total
+    const countResult = await this.pool.query(
+      `SELECT COUNT(*) as count FROM videos ${whereClause}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    // Fetch page — limit/offset appended as positional params
+    const dataParams = [...params, limit, offset];
+    const videos = await this.pool.query(
+      `SELECT * FROM videos ${whereClause} ORDER BY ${sortColumn} ${sortOrder} LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+      dataParams
+    );
 
     return {
-      videos: videos.map(v => ({ ...v, tags: JSON.parse(v.tags || '[]') })),
+      videos: videos.rows.map(v => ({
+        ...v,
+        tags: v.tags || [],                        // JSONB → already a JS array
+        file_size: v.file_size ? Number(v.file_size) : null   // BIGINT → Number
+      })),
       pagination: {
         page,
         limit,
@@ -54,10 +73,12 @@ class VideoManager {
   /**
    * Get a single video by ID
    */
-  getVideo(id) {
-    const video = this.db.prepare('SELECT * FROM videos WHERE id = ?').get(id);
-    if (!video) return null;
-    video.tags = JSON.parse(video.tags || '[]');
+  async getVideo(id) {
+    const result = await this.pool.query('SELECT * FROM videos WHERE id = $1', [id]);
+    if (result.rows.length === 0) return null;
+    const video = result.rows[0];
+    video.tags = video.tags || [];
+    video.file_size = video.file_size ? Number(video.file_size) : null;
     return video;
   }
 
@@ -85,22 +106,22 @@ class VideoManager {
       }
     }
 
-    this.db.prepare(`
+    await this.pool.query(`
       INSERT INTO videos (id, title, description, filename, original_path, file_size, category, tags, status, s3_key, s3_url)
-      VALUES (@id, @title, @description, @filename, @original_path, @file_size, @category, @tags, @status, @s3_key, @s3_url)
-    `).run({
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [
       id,
       title,
       description,
-      filename: file.filename || file.originalname,
-      original_path: file.path || '',
-      file_size: file.size,
+      file.filename || file.originalname,
+      file.path || '',
+      file.size,
       category,
-      tags: JSON.stringify(tags),
-      status: 'ready',
-      s3_key: s3Key,
-      s3_url: s3Url
-    });
+      JSON.stringify(tags),    // pg driver auto-converts to JSONB
+      'ready',
+      s3Key,
+      s3Url
+    ]);
 
     return this.getVideo(id);
   }
@@ -108,28 +129,33 @@ class VideoManager {
   /**
    * Update video metadata
    */
-  updateVideo(id, updates) {
+  async updateVideo(id, updates) {
     const allowed = ['title', 'description', 'category', 'tags'];
     const fields = [];
-    const params = { id };
+    const params = [id];      // $1 is always 'id'
+    let paramIndex = 2;
 
     for (const key of allowed) {
       if (updates[key] !== undefined) {
         if (key === 'tags') {
-          fields.push(`${key} = @${key}`);
-          params[key] = JSON.stringify(updates[key]);
+          fields.push(`${key} = $${paramIndex}`);
+          params.push(JSON.stringify(updates[key]));
         } else {
-          fields.push(`${key} = @${key}`);
-          params[key] = updates[key];
+          fields.push(`${key} = $${paramIndex}`);
+          params.push(updates[key]);
         }
+        paramIndex++;
       }
     }
 
     if (fields.length === 0) return this.getVideo(id);
 
-    fields.push("updated_at = datetime('now')");
+    fields.push('updated_at = NOW()');
 
-    this.db.prepare(`UPDATE videos SET ${fields.join(', ')} WHERE id = @id`).run(params);
+    await this.pool.query(
+      `UPDATE videos SET ${fields.join(', ')} WHERE id = $1`,
+      params
+    );
     return this.getVideo(id);
   }
 
@@ -137,7 +163,7 @@ class VideoManager {
    * Delete a video and its R2 object
    */
   async deleteVideo(id) {
-    const video = this.getVideo(id);
+    const video = await this.getVideo(id);
     if (!video) return false;
 
     // Delete from R2
@@ -146,7 +172,7 @@ class VideoManager {
     }
 
     // Delete DB record
-    this.db.prepare('DELETE FROM videos WHERE id = ?').run(id);
+    await this.pool.query('DELETE FROM videos WHERE id = $1', [id]);
 
     return true;
   }
@@ -154,8 +180,11 @@ class VideoManager {
   /**
    * Get all unique categories
    */
-  getCategories() {
-    return this.db.prepare('SELECT DISTINCT category, COUNT(*) as count FROM videos GROUP BY category ORDER BY count DESC').all();
+  async getCategories() {
+    const result = await this.pool.query(
+      'SELECT DISTINCT category, COUNT(*) as count FROM videos GROUP BY category ORDER BY count DESC'
+    );
+    return result.rows;
   }
 }
 

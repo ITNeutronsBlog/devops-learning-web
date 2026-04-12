@@ -30,7 +30,7 @@ COPY frontend /app/public
 ENV NODE_ENV=production
 ENV PORT=3005
 ENV DATA_DIR=/data/videos
-ENV DB_PATH=/data/videos/database.sqlite
+# DATABASE_URL is injected via docker-compose environment
 ENV FRONTEND_DIR=/app/public
 
 EXPOSE 3005
