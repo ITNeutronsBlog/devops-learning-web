@@ -1,0 +1,31 @@
+[Unit]
+Description=Auto Failover Daemon — PostgreSQL DR Monitoring
+Documentation=https://github.com/ITNeutronsBlog/devops-learning-web
+After=network.target redis.service docker.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/devops-learning-web/scripts
+ExecStart=/usr/bin/python3 /opt/devops-learning-web/scripts/auto_failover.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/auto-failover.log
+StandardError=append:/var/log/auto-failover.log
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target
