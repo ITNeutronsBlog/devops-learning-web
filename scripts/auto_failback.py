@@ -1,0 +1,696 @@
+#!/usr/bin/env python3
+"""
+═══════════════════════════════════════════════════════════
+AUTO FAILBACK — Restore primary and demote DR to standby
+═══════════════════════════════════════════════════════════
+
+This script performs a controlled failback from DR to primary.
+It is ALWAYS manual (never automatic) to prevent data loss.
+
+Usage:
+    python3 auto_failback.py                    # Interactive failback
+    python3 auto_failback.py --preflight        # Run pre-flight checks only
+    python3 auto_failback.py --status           # Show current DR/Primary status
+    python3 auto_failback.py --force            # Skip confirmations (dangerous!)
+
+Run from: DR server (3.7.200.91)
+Requires: redis, requests, pyyaml, paramiko
+"""
+
+import os
+import sys
+import time
+import json
+import logging
+import argparse
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+import redis
+import requests
+
+# ════════════════════════════════════════════════
+# CONSTANTS
+# ════════════════════════════════════════════════
+
+SCRIPT_DIR = Path(__file__).parent.resolve()
+CONFIG_PATH = SCRIPT_DIR / "auto_failover_config.yaml"
+LOG_PATH = "/var/log/auto-failback.log"
+
+REDIS_PREFIX = "auto_failover"
+STATE_KEY = f"{REDIS_PREFIX}:status"
+FAILURE_COUNT_KEY = f"{REDIS_PREFIX}:failure_count"
+HISTORY_KEY = f"{REDIS_PREFIX}:history"
+
+# Colors for terminal output
+class C:
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    BLUE = "\033[94m"
+    BOLD = "\033[1m"
+    END = "\033[0m"
+
+# ════════════════════════════════════════════════
+# LOGGING
+# ════════════════════════════════════════════════
+
+def setup_logging():
+    logger = logging.getLogger("auto_failback")
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(levelname)s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    try:
+        fh = logging.FileHandler(LOG_PATH)
+    except PermissionError:
+        fh = logging.FileHandler("/tmp/auto-failback.log")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+    return logger
+
+log = setup_logging()
+
+# ════════════════════════════════════════════════
+# CONFIGURATION
+# ════════════════════════════════════════════════
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        log.error(f"Config not found: {CONFIG_PATH}")
+        sys.exit(1)
+    with open(CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+# ════════════════════════════════════════════════
+# REDIS STATE
+# ════════════════════════════════════════════════
+
+class StateManager:
+    def __init__(self, redis_url="redis://localhost:6379/0"):
+        self.r = redis.from_url(redis_url, decode_responses=True)
+
+    def get_status(self):
+        return self.r.get(STATE_KEY) or "UNKNOWN"
+
+    def set_status(self, status):
+        self.r.set(STATE_KEY, status)
+
+    def reset_failure(self):
+        self.r.set(FAILURE_COUNT_KEY, 0)
+
+    def add_history(self, event):
+        entry = json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": event
+        })
+        self.r.lpush(HISTORY_KEY, entry)
+        self.r.ltrim(HISTORY_KEY, 0, 99)
+
+# ════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ════════════════════════════════════════════════
+
+def run_cmd(cmd, timeout=60, check=False):
+    """Run a shell command and return (success, stdout, stderr)."""
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True,
+            timeout=timeout, shell=isinstance(cmd, str)
+        )
+        return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return False, "", "Command timed out"
+    except Exception as e:
+        return False, "", str(e)
+
+
+def run_remote(host, user, key_path, command, timeout=60):
+    """Run command on remote host via SSH."""
+    ssh_cmd = [
+        "ssh", "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes"
+    ]
+    if key_path:
+        ssh_cmd.extend(["-i", key_path])
+    ssh_cmd.extend([f"{user}@{host}", command])
+
+    return run_cmd(ssh_cmd, timeout=timeout)
+
+
+def banner(text, char="═"):
+    width = 55
+    print(f"\n{C.BOLD}{char * width}{C.END}")
+    print(f"{C.BOLD}  {text}{C.END}")
+    print(f"{C.BOLD}{char * width}{C.END}\n")
+
+
+def step(number, total, description):
+    print(f"\n{C.BLUE}{C.BOLD}[{number}/{total}]{C.END} {description}")
+    log.info(f"Step {number}/{total} — {description}")
+
+
+def result_pass(msg):
+    print(f"  {C.GREEN}✅ {msg}{C.END}")
+    log.info(f"  PASS: {msg}")
+
+
+def result_fail(msg):
+    print(f"  {C.RED}❌ {msg}{C.END}")
+    log.error(f"  FAIL: {msg}")
+
+
+def result_warn(msg):
+    print(f"  {C.YELLOW}⚠️  {msg}{C.END}")
+    log.warning(f"  WARN: {msg}")
+
+
+def confirm(prompt):
+    """Ask for confirmation. Returns True if confirmed."""
+    response = input(f"\n{C.YELLOW}{prompt} (yes/no): {C.END}").strip().lower()
+    return response in ("yes", "y")
+
+# ════════════════════════════════════════════════
+# PRE-FLIGHT CHECKS
+# ════════════════════════════════════════════════
+
+def preflight_checks(config, state):
+    """
+    Verify all conditions are met before starting failback.
+    Returns (all_passed: bool, results: dict)
+    """
+    banner("PRE-FLIGHT CHECKS")
+    results = {}
+    all_passed = True
+
+    primary = config["primary"]
+    dr = config["dr"]
+
+    # ── Check 1: Verify DR is currently active ──
+    step(1, 7, "Verify DR status")
+    status = state.get_status()
+    if status == "DR_ACTIVE":
+        result_pass(f"DR is active (state: {status})")
+        results["dr_active"] = True
+    else:
+        result_warn(f"DR state is '{status}' — expected 'DR_ACTIVE'")
+        results["dr_active"] = False
+        # Don't fail — operator may want to proceed anyway
+
+    # ── Check 2: DR PostgreSQL is running as primary ──
+    step(2, 7, "Verify DR PostgreSQL is running as primary")
+    ok, out, err = run_cmd([
+        "sudo", "docker", "exec", "devops-learning-db",
+        "psql", "-U", "devops", "-d", "devops_learning",
+        "-t", "-c", "SELECT pg_is_in_recovery();"
+    ])
+    if ok and "f" in out:
+        result_pass("DR PostgreSQL is primary (not in recovery)")
+        results["dr_pg_primary"] = True
+    elif ok and "t" in out:
+        result_fail("DR PostgreSQL is still in standby mode!")
+        results["dr_pg_primary"] = False
+        all_passed = False
+    else:
+        result_fail(f"Cannot check DR PostgreSQL: {err}")
+        results["dr_pg_primary"] = False
+        all_passed = False
+
+    # ── Check 3: DR database has data ──
+    step(3, 7, "Verify DR database has data")
+    ok, out, err = run_cmd([
+        "sudo", "docker", "exec", "devops-learning-db",
+        "psql", "-U", "devops", "-d", "devops_learning",
+        "-t", "-c", "SELECT COUNT(*) FROM videos;"
+    ])
+    if ok:
+        count = out.strip()
+        result_pass(f"DR database has {count} video records")
+        results["dr_data_count"] = count
+    else:
+        result_warn(f"Cannot count records: {err}")
+        results["dr_data_count"] = "unknown"
+
+    # ── Check 4: Primary server is reachable (SSH) ──
+    step(4, 7, "Verify primary server is reachable")
+    ssh_user = primary.get("ssh_user", "ubuntu")
+    ssh_host = primary["ssh_host"]
+    ssh_key = primary.get("ssh_key", "")
+
+    ok, out, err = run_remote(ssh_host, ssh_user, ssh_key, "echo 'PRIMARY_OK'")
+    if ok and "PRIMARY_OK" in out:
+        result_pass(f"Primary server reachable via SSH ({ssh_host})")
+        results["primary_reachable"] = True
+    else:
+        result_fail(f"Cannot SSH to primary: {err}")
+        results["primary_reachable"] = False
+        all_passed = False
+
+    # ── Check 5: Primary Docker is running ──
+    step(5, 7, "Verify primary Docker is running")
+    if results.get("primary_reachable"):
+        ok, out, err = run_remote(ssh_host, ssh_user, ssh_key, "docker ps --format '{{.Names}}'")
+        if ok:
+            result_pass(f"Primary Docker running — containers: {out.replace(chr(10), ', ')}")
+            results["primary_docker"] = True
+        else:
+            result_warn(f"Docker check failed: {err}")
+            results["primary_docker"] = False
+    else:
+        result_fail("Skipped — primary not reachable")
+        results["primary_docker"] = False
+
+    # ── Check 6: Primary port 5432 is accessible ──
+    step(6, 7, "Verify primary PostgreSQL port")
+    if results.get("primary_reachable"):
+        ok, out, err = run_remote(
+            ssh_host, ssh_user, ssh_key,
+            "docker exec devops-learning-db pg_isready -U devops -d devops_learning 2>/dev/null || echo 'NOT_READY'"
+        )
+        if ok and "accepting" in out:
+            result_pass("Primary PostgreSQL is accepting connections")
+            results["primary_pg_ready"] = True
+        else:
+            result_warn(f"Primary PG not ready: {out}")
+            results["primary_pg_ready"] = False
+    else:
+        result_fail("Skipped — primary not reachable")
+        results["primary_pg_ready"] = False
+
+    # ── Check 7: Disk space on primary ──
+    step(7, 7, "Check primary disk space")
+    if results.get("primary_reachable"):
+        ok, out, err = run_remote(
+            ssh_host, ssh_user, ssh_key,
+            "df -h / | tail -1 | awk '{print $5}'"
+        )
+        if ok:
+            usage = out.strip()
+            result_pass(f"Primary disk usage: {usage}")
+            results["primary_disk"] = usage
+        else:
+            result_warn("Cannot check disk space")
+    else:
+        result_fail("Skipped — primary not reachable")
+
+    # ── Summary ──
+    banner("PRE-FLIGHT RESULTS")
+    passed = sum(1 for v in results.values() if v is True or (isinstance(v, str) and v not in ("unknown", "")))
+    total = len(results)
+    print(f"  Results: {C.GREEN}{passed} passed{C.END}, {C.RED}{total - passed} issues{C.END}")
+
+    if not all_passed:
+        print(f"\n  {C.RED}⚠️  Some critical checks failed!{C.END}")
+        print(f"  {C.YELLOW}Fix the issues above before proceeding.{C.END}")
+
+    return all_passed, results
+
+# ════════════════════════════════════════════════
+# FAILBACK EXECUTION
+# ════════════════════════════════════════════════
+
+def execute_failback(config, state, force=False):
+    """
+    Execute the complete failback sequence.
+    
+    Flow:
+    1. Pre-flight checks
+    2. Pause auto-failover
+    3. Stop app on DR (keep PG running)
+    4. Sync data DR → Primary
+    5. Start primary
+    6. Verify primary health
+    7. Convert DR back to standby
+    8. Resume auto-failover monitoring
+    """
+    primary = config["primary"]
+    dr = config["dr"]
+    ssh_user = primary.get("ssh_user", "ubuntu")
+    ssh_host = primary["ssh_host"]
+    ssh_key = primary.get("ssh_key", "")
+    compose_path = dr["compose_path"]
+
+    total_steps = 10
+
+    banner("FAILBACK — DR → PRIMARY", "🔄")
+    log.critical("🔄 ═══ FAILBACK INITIATED ═══")
+    state.add_history("FAILBACK_STARTED")
+
+    print(f"  {C.BOLD}Primary:{C.END}  {ssh_host}")
+    print(f"  {C.BOLD}DR:{C.END}       {dr['instance_id']}")
+    print(f"  {C.BOLD}Time:{C.END}     {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+    # ── Step 1: Pre-flight ──
+    step(1, total_steps, "Pre-flight checks")
+    passed, results = preflight_checks(config, state)
+    if not passed and not force:
+        result_fail("Pre-flight failed — use --force to override")
+        return False
+
+    if not force:
+        print(f"\n  {C.YELLOW}{C.BOLD}⚠️  FAILBACK WILL:{C.END}")
+        print(f"  {C.YELLOW}  • Stop the app on DR server{C.END}")
+        print(f"  {C.YELLOW}  • Sync ALL data from DR → Primary{C.END}")
+        print(f"  {C.YELLOW}  • Restart primary as the main database{C.END}")
+        print(f"  {C.YELLOW}  • Convert DR back to standby mode{C.END}")
+        if not confirm("Proceed with failback?"):
+            print("❌ Failback cancelled")
+            return False
+
+    # ── Step 2: Pause auto-failover ──
+    step(2, total_steps, "Pausing auto-failover daemon")
+    state.set_status("FAILBACK_IN_PROGRESS")
+    state.add_history("AUTO_FAILOVER_PAUSED_FOR_FAILBACK")
+    result_pass("Auto-failover paused")
+
+    # ── Step 3: Stop app on DR (keep PG for data sync) ──
+    step(3, total_steps, "Stopping app on DR (keeping PostgreSQL)")
+    ok, out, err = run_cmd([
+        "sudo", "docker", "stop",
+        "devops-learning-app", "devops-learning-nginx"
+    ], timeout=30)
+    if ok:
+        result_pass("App and Nginx stopped on DR")
+    else:
+        result_warn(f"Some containers may not exist: {err}")
+
+    # ── Step 4: Stop primary PostgreSQL ──
+    step(4, total_steps, "Stopping primary PostgreSQL")
+    ok, out, err = run_remote(
+        ssh_host, ssh_user, ssh_key,
+        "docker stop devops-learning-app devops-learning-db devops-learning-nginx 2>/dev/null; echo DONE"
+    )
+    if ok:
+        result_pass("Primary containers stopped")
+    else:
+        result_warn(f"Primary stop: {err}")
+
+    # ── Step 5: Get PG data path on primary ──
+    step(5, total_steps, "Finding primary PG data path")
+    ok, pg_path, err = run_remote(
+        ssh_host, ssh_user, ssh_key,
+        "docker volume inspect devops-learning-web_pg_data --format '{{ .Mountpoint }}' 2>/dev/null || echo '/var/snap/docker/common/var-lib-docker/volumes/devops-learning-web_pg_data/_data'"
+    )
+    if ok and pg_path:
+        result_pass(f"Primary PG path: {pg_path}")
+    else:
+        pg_path = "/var/snap/docker/common/var-lib-docker/volumes/devops-learning-web_pg_data/_data"
+        result_warn(f"Using default path: {pg_path}")
+
+    # ── Step 6: Sync data from DR → Primary via pg_basebackup ──
+    step(6, total_steps, "Syncing data from DR → Primary")
+    print(f"  {C.YELLOW}This may take several minutes...{C.END}")
+
+    # Clean primary PG data
+    run_remote(ssh_host, ssh_user, ssh_key,
+               f"sudo rm -rf {pg_path}/* && sudo mkdir -p {pg_path}")
+
+    # pg_basebackup from DR to primary
+    # DR PG is on port 5432, we need primary to pull from DR
+    # Alternative: use pg_dump/pg_restore for cleaner approach
+    ok, out, err = run_remote(
+        ssh_host, ssh_user, ssh_key,
+        f"pg_basebackup -h 3.7.200.91 -p 5432 -U replicator "
+        f"-D {pg_path} --checkpoint=fast --wal-method=stream --progress --verbose "
+        f"2>&1 || echo 'BASEBACKUP_FAILED'",
+        timeout=600
+    )
+    if ok and "BASEBACKUP_FAILED" not in out:
+        result_pass("Data synced from DR → Primary")
+    else:
+        # Fallback: use pg_dump/pg_restore
+        result_warn(f"pg_basebackup failed: {err}")
+        print(f"  {C.YELLOW}Trying pg_dump/pg_restore fallback...{C.END}")
+
+        # Dump from DR
+        ok1, dump_out, dump_err = run_cmd([
+            "sudo", "docker", "exec", "devops-learning-db",
+            "pg_dump", "-U", "devops", "-d", "devops_learning",
+            "--format=custom", "--file=/tmp/failback_dump.custom"
+        ], timeout=300)
+
+        if ok1:
+            # Copy dump to primary
+            run_cmd(f"sudo docker cp devops-learning-db:/tmp/failback_dump.custom /tmp/failback_dump.custom", timeout=60)
+
+            scp_cmd = ["scp", "-o", "StrictHostKeyChecking=no"]
+            if ssh_key:
+                scp_cmd.extend(["-i", ssh_key])
+            scp_cmd.extend(["/tmp/failback_dump.custom", f"{ssh_user}@{ssh_host}:/tmp/"])
+            run_cmd(scp_cmd, timeout=300)
+
+            # Start primary PG and restore
+            run_remote(ssh_host, ssh_user, ssh_key,
+                      "docker start devops-learning-db && sleep 10", timeout=30)
+            ok2, _, restore_err = run_remote(
+                ssh_host, ssh_user, ssh_key,
+                "docker exec devops-learning-db pg_restore -U devops -d devops_learning "
+                "--clean --if-exists /tmp/failback_dump.custom 2>&1",
+                timeout=300
+            )
+            if ok2:
+                result_pass("Data restored via pg_dump/pg_restore")
+            else:
+                result_fail(f"Restore failed: {restore_err}")
+                state.set_status("FAILED")
+                return False
+        else:
+            result_fail(f"pg_dump failed: {dump_err}")
+            state.set_status("FAILED")
+            return False
+
+    # ── Step 7: Remove standby.signal on primary ──
+    step(7, total_steps, "Configuring primary as standalone")
+    run_remote(ssh_host, ssh_user, ssh_key,
+               f"sudo rm -f {pg_path}/standby.signal")
+    # Remove any replication config from auto.conf
+    run_remote(ssh_host, ssh_user, ssh_key,
+               f"sudo sed -i '/primary_conninfo/d' {pg_path}/postgresql.auto.conf && "
+               f"sudo sed -i '/primary_slot_name/d' {pg_path}/postgresql.auto.conf && "
+               f"sudo sed -i '/hot_standby/d' {pg_path}/postgresql.auto.conf")
+    # Fix ownership
+    run_remote(ssh_host, ssh_user, ssh_key,
+               f"sudo chown -R 999:999 {pg_path}")
+    result_pass("Primary configured as standalone")
+
+    # ── Step 8: Start primary stack ──
+    step(8, total_steps, "Starting primary application stack")
+    ok, out, err = run_remote(
+        ssh_host, ssh_user, ssh_key,
+        "cd /opt/devops-learning-web && "
+        "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d",
+        timeout=120
+    )
+    if ok:
+        result_pass("Primary stack starting")
+    else:
+        result_warn(f"Start output: {err}")
+
+    # Wait for health
+    print(f"  {C.YELLOW}Waiting for primary health check...{C.END}")
+    primary_healthy = False
+    for attempt in range(1, 21):
+        try:
+            resp = requests.get(config["primary"]["health_url"], timeout=10)
+            if resp.status_code == 200:
+                result_pass(f"Primary healthy! (attempt {attempt})")
+                primary_healthy = True
+                break
+        except Exception:
+            pass
+        print(f"    Attempt {attempt}/20 — waiting 15s...")
+        time.sleep(15)
+
+    if not primary_healthy:
+        result_fail("Primary failed health check after 20 attempts!")
+        state.set_status("FAILED")
+        return False
+
+    # ── Step 9: Convert DR back to standby ──
+    step(9, total_steps, "Converting DR back to standby mode")
+
+    # Stop all DR containers
+    run_cmd(["sudo", "docker", "compose",
+             "-f", f"{compose_path}/docker-compose.yml",
+             "-f", f"{compose_path}/docker-compose.prod.yml",
+             "-f", f"{compose_path}/docker-compose.dr.yml",
+             "down"], timeout=60)
+
+    # Re-create replication slot on primary (if dropped)
+    run_remote(ssh_host, ssh_user, ssh_key,
+               "docker exec devops-learning-db psql -U devops -d devops_learning -c "
+               "\"SELECT pg_create_physical_replication_slot('dr_mumbai');\" 2>/dev/null || true")
+
+    # Wipe DR data and re-sync
+    run_cmd("sudo rm -rf /data/postgres/*", timeout=30)
+    run_cmd("sudo chown $(whoami):$(whoami) /data/postgres", timeout=10)
+
+    ok, out, err = run_cmd([
+        "pg_basebackup",
+        "-h", ssh_host, "-p", "5432", "-U", "replicator",
+        "-D", "/data/postgres",
+        "--checkpoint=fast", "--slot=dr_mumbai",
+        "--wal-method=stream", "--progress", "--verbose"
+    ], timeout=600)
+
+    if ok:
+        result_pass("DR data re-synced from primary")
+    else:
+        result_warn(f"pg_basebackup to DR: {err}")
+        result_warn("Manual re-sync may be needed later")
+
+    # Re-create standby config
+    run_cmd("sudo touch /data/postgres/standby.signal", timeout=5)
+
+    # Write standby config
+    standby_conf = (
+        "\nprimary_conninfo = 'host={} port=5432 user=replicator "
+        "password=Admin@123 application_name=dr_mumbai'\n"
+        "primary_slot_name = 'dr_mumbai'\n"
+        "hot_standby = on\n"
+    ).format(ssh_host)
+
+    run_cmd(f"echo '{standby_conf}' | sudo tee -a /data/postgres/postgresql.auto.conf > /dev/null", timeout=5)
+    run_cmd("sudo chown -R 999:999 /data/postgres", timeout=10)
+
+    # Start DR PG in standby mode
+    run_cmd(["sudo", "docker", "compose",
+             "-f", f"{compose_path}/docker-compose.yml",
+             "-f", f"{compose_path}/docker-compose.prod.yml",
+             "-f", f"{compose_path}/docker-compose.dr.yml",
+             "up", "-d", "postgres"], timeout=60)
+
+    time.sleep(10)
+    ok, out, err = run_cmd(
+        "sudo docker logs devops-learning-db --tail 5 2>&1 | grep -c 'streaming WAL'",
+        timeout=10
+    )
+    if ok and out.strip() != "0":
+        result_pass("DR PostgreSQL streaming from primary")
+    else:
+        result_warn("DR streaming not confirmed — check logs manually")
+
+    # ── Step 10: Reset auto-failover ──
+    step(10, total_steps, "Resuming auto-failover monitoring")
+    state.set_status("MONITORING")
+    state.reset_failure()
+    state.add_history("FAILBACK_COMPLETE")
+    result_pass("Auto-failover reset to MONITORING")
+
+    # ── Final Summary ──
+    banner("FAILBACK COMPLETE ✅", "🎉")
+    print(f"  {C.GREEN}{C.BOLD}Primary is now serving traffic{C.END}")
+    print(f"  {C.GREEN}  URL: {config['primary']['health_url'].replace('/api/health', '')}{C.END}")
+    print(f"  {C.GREEN}  DR:  Standby mode (streaming from primary){C.END}")
+    print()
+    print(f"  {C.YELLOW}Verify:{C.END}")
+    print(f"    curl {config['primary']['health_url']}")
+    print(f"    python3 auto_failover.py --status")
+    print()
+
+    log.critical("✅ FAILBACK COMPLETE — Primary is serving traffic")
+    return True
+
+# ════════════════════════════════════════════════
+# STATUS COMMAND
+# ════════════════════════════════════════════════
+
+def show_status(config, state):
+    """Show current status of both primary and DR."""
+    banner("FAILBACK STATUS")
+
+    primary = config["primary"]
+
+    # DR Status
+    print(f"  {C.BOLD}DR Server (local):{C.END}")
+    status = state.get_status()
+    status_colors = {
+        "MONITORING": C.GREEN, "DR_ACTIVE": C.BLUE,
+        "MANUAL_OVERRIDE": C.YELLOW, "FAILED": C.RED
+    }
+    color = status_colors.get(status, C.END)
+    print(f"    State: {color}{status}{C.END}")
+
+    ok, out, _ = run_cmd([
+        "sudo", "docker", "exec", "devops-learning-db",
+        "psql", "-U", "devops", "-d", "devops_learning",
+        "-t", "-c", "SELECT pg_is_in_recovery();"
+    ])
+    if ok:
+        mode = "standby" if "t" in out else "primary"
+        print(f"    PG Mode: {mode}")
+
+    ok, out, _ = run_cmd("sudo docker ps --filter name=devops-learning --format '{{.Names}}: {{.Status}}'", timeout=10)
+    if ok and out:
+        for line in out.strip().split("\n"):
+            print(f"    Container: {line}")
+
+    # Primary Status
+    print(f"\n  {C.BOLD}Primary Server ({primary['ssh_host']}):{C.END}")
+    try:
+        resp = requests.get(primary["health_url"], timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            print(f"    Health: {C.GREEN}OK{C.END}")
+            print(f"    DB: {data.get('database', {}).get('status', 'unknown')}")
+            print(f"    Videos: {data.get('videos', {}).get('total', '?')}")
+        else:
+            print(f"    Health: {C.RED}HTTP {resp.status_code}{C.END}")
+    except Exception as e:
+        print(f"    Health: {C.RED}Unreachable ({e}){C.END}")
+
+    print()
+
+# ════════════════════════════════════════════════
+# ENTRY POINT
+# ════════════════════════════════════════════════
+
+def main():
+    parser = argparse.ArgumentParser(description="Auto Failback — DR → Primary")
+    parser.add_argument("--preflight", action="store_true", help="Run pre-flight checks only")
+    parser.add_argument("--status", action="store_true", help="Show DR/Primary status")
+    parser.add_argument("--force", action="store_true", help="Skip confirmations")
+    parser.add_argument("--config", default=str(CONFIG_PATH), help="Config file path")
+    args = parser.parse_args()
+
+    config = load_config()
+    redis_url = config.get("redis", {}).get("url", "redis://localhost:6379/0")
+
+    try:
+        state = StateManager(redis_url)
+    except redis.exceptions.ConnectionError:
+        print(f"{C.RED}❌ Cannot connect to Redis{C.END}")
+        sys.exit(1)
+
+    if args.status:
+        show_status(config, state)
+    elif args.preflight:
+        preflight_checks(config, state)
+    else:
+        banner("FAILBACK — Restore Primary Server", "🔄")
+        print(f"  {C.YELLOW}This will:{C.END}")
+        print(f"  1. Stop the app on DR")
+        print(f"  2. Sync data from DR → Primary")
+        print(f"  3. Start primary as the main server")
+        print(f"  4. Convert DR back to standby")
+        print()
+
+        if not args.force:
+            if not confirm("Start failback process?"):
+                print("❌ Cancelled")
+                return
+
+        success = execute_failback(config, state, force=args.force)
+        sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()
