@@ -2,6 +2,8 @@ const { Pool } = require('pg');
 
 /**
  * Initialize PostgreSQL connection pool and ensure schema exists.
+ * Retries connection up to 10 times (with 3s delay) to handle
+ * container startup race conditions.
  * Returns a pg.Pool instance for use throughout the application.
  */
 async function initDatabase() {
@@ -12,43 +14,58 @@ async function initDatabase() {
     connectionTimeoutMillis: 5000,
   });
 
-  // Verify connectivity
-  const client = await pool.connect();
-  try {
-    // Create videos table with PostgreSQL-native types
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS videos (
-        id            TEXT PRIMARY KEY,
-        title         TEXT NOT NULL,
-        description   TEXT DEFAULT '',
-        filename      TEXT NOT NULL,
-        original_path TEXT DEFAULT '',
-        file_size     BIGINT,
-        status        TEXT DEFAULT 'ready',
-        category      TEXT DEFAULT 'uncategorized',
-        tags          JSONB DEFAULT '[]'::jsonb,
-        s3_key        TEXT,
-        s3_url        TEXT,
-        source_url    TEXT,
-        duration      DOUBLE PRECISION,
-        created_at    TIMESTAMPTZ DEFAULT NOW(),
-        updated_at    TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+  // Retry loop — PostgreSQL may not be ready on first boot
+  const maxRetries = 10;
+  const retryDelay = 3000; // 3 seconds
 
-    // Create indexes for common queries
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
-      CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category);
-      CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
-    `);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const client = await pool.connect();
+      try {
+        // Create videos table with PostgreSQL-native types
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS videos (
+            id            TEXT PRIMARY KEY,
+            title         TEXT NOT NULL,
+            description   TEXT DEFAULT '',
+            filename      TEXT NOT NULL,
+            original_path TEXT DEFAULT '',
+            file_size     BIGINT,
+            status        TEXT DEFAULT 'ready',
+            category      TEXT DEFAULT 'uncategorized',
+            tags          JSONB DEFAULT '[]'::jsonb,
+            s3_key        TEXT,
+            s3_url        TEXT,
+            source_url    TEXT,
+            duration      DOUBLE PRECISION,
+            created_at    TIMESTAMPTZ DEFAULT NOW(),
+            updated_at    TIMESTAMPTZ DEFAULT NOW()
+          );
+        `);
 
-    console.log('📦 PostgreSQL database initialized');
-  } finally {
-    client.release();
+        // Create indexes for common queries
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+          CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category);
+          CREATE INDEX IF NOT EXISTS idx_videos_created_at ON videos(created_at);
+        `);
+
+        console.log('📦 PostgreSQL database initialized');
+        return pool;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      if (attempt < maxRetries) {
+        console.log(`⏳ PostgreSQL not ready (attempt ${attempt}/${maxRetries}): ${err.message}`);
+        console.log(`   Retrying in ${retryDelay / 1000}s...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+      } else {
+        console.error(`❌ Failed to connect to PostgreSQL after ${maxRetries} attempts`);
+        throw err;
+      }
+    }
   }
-
-  return pool;
 }
 
 module.exports = { initDatabase };
