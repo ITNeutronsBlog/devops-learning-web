@@ -234,7 +234,7 @@ def check_primary_health(config):
     # Check 2: PostgreSQL replication status (optional, checks if DR is receiving)
     try:
         result = subprocess.run(
-            ["sudo", "docker", "exec", "devops-learning-db",
+            ["sudo", "docker", "exec", "devops-learning-db-dr",
              "psql", "-U", "devops", "-d", "devops_learning",
              "-t", "-c", "SELECT 1;"],
             capture_output=True, text=True, timeout=10
@@ -339,7 +339,7 @@ def execute_failover(config, state):
             if ssh_key:
                 ssh_cmd.extend(["-i", ssh_key])
             ssh_cmd.extend([f"{ssh_user}@{ssh_host}",
-                           "docker stop devops-learning-app devops-learning-db 2>/dev/null || true"])
+                           "docker stop devops-learning-app devops-learning-db-prod 2>/dev/null || true"])
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
                 log.info("  ✅ Primary containers stopped (fenced)")
@@ -358,7 +358,7 @@ def execute_failover(config, state):
         log.info("3/6 — Promoting PostgreSQL standby to primary...")
         try:
             result = subprocess.run(
-                ["sudo", "docker", "exec", "-u", "postgres", "devops-learning-db",
+                ["sudo", "docker", "exec", "-u", "postgres", "devops-learning-db-dr",
                  "pg_ctl", "promote", "-D", "/var/lib/postgresql/data"],
                 capture_output=True, text=True, timeout=30
             )
@@ -369,7 +369,7 @@ def execute_failover(config, state):
                 log.warning(f"  ⚠️ Promotion output: {result.stderr}")
                 # Check if PG is already a primary (not in recovery)
                 check = subprocess.run(
-                    ["sudo", "docker", "exec", "devops-learning-db",
+                    ["sudo", "docker", "exec", "devops-learning-db-dr",
                      "psql", "-U", "devops", "-d", "devops_learning",
                      "-t", "-c", "SELECT pg_is_in_recovery();"],
                     capture_output=True, text=True, timeout=10
@@ -390,8 +390,8 @@ def execute_failover(config, state):
                 f"# Sanitized by auto_failover.py at {timestamp}\n"
                 "AUTOCONF_EOF"
             )
-            subprocess.run(["sudo", "docker", "exec", "devops-learning-db", "bash", "-c", clean_autoconf], capture_output=True)
-            subprocess.run(["sudo", "docker", "exec", "devops-learning-db", "chown", "999:999", "/var/lib/postgresql/data/postgresql.auto.conf"], capture_output=True)
+            subprocess.run(["sudo", "docker", "exec", "devops-learning-db-dr", "bash", "-c", clean_autoconf], capture_output=True)
+            subprocess.run(["sudo", "docker", "exec", "devops-learning-db-dr", "chown", "999:999", "/var/lib/postgresql/data/postgresql.auto.conf"], capture_output=True)
         except Exception as e:
             log.error(f"  ❌ PostgreSQL promotion failed: {e}")
             state.add_history(f"FAILOVER_FAILED: PG promotion — {e}")

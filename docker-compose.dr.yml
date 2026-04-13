@@ -1,0 +1,11 @@
+# DR Compose Override File
+# This file only lives on the DR Server and overrides specific configuration
+# from docker-compose.yml to suit the Disaster Recovery environment.
+
+services:
+  postgres:
+    # Set the DR-specific container name
+    container_name: devops-learning-db-dr
+    # Override primary volume mapping to use specific host directory for DR cloning
+    volumes:
+      - /data/postgres:/var/lib/postgresql/data

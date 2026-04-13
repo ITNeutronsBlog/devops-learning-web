@@ -283,7 +283,7 @@ def preflight_checks(config, state):
     # ── Check 2: DR PostgreSQL is running as primary ──
     step(2, 7, "Verify DR PostgreSQL is running as primary")
     ok, out, err = run_cmd([
-        "sudo", "docker", "exec", "devops-learning-db",
+        "sudo", "docker", "exec", "devops-learning-db-dr",
         "psql", "-U", "devops", "-d", "devops_learning",
         "-t", "-c", "SELECT pg_is_in_recovery();"
     ])
@@ -302,7 +302,7 @@ def preflight_checks(config, state):
     # ── Check 3: DR database has data ──
     step(3, 7, "Verify DR database has data")
     ok, out, err = run_cmd([
-        "sudo", "docker", "exec", "devops-learning-db",
+        "sudo", "docker", "exec", "devops-learning-db-dr",
         "psql", "-U", "devops", "-d", "devops_learning",
         "-t", "-c", "SELECT COUNT(*) FROM videos;"
     ])
@@ -348,7 +348,7 @@ def preflight_checks(config, state):
     if results.get("primary_reachable"):
         ok, out, err = run_remote(
             ssh_host, ssh_user, ssh_key,
-            "docker exec devops-learning-db pg_isready -U devops -d devops_learning 2>/dev/null || echo 'NOT_READY'"
+            "docker exec devops-learning-db-prod pg_isready -U devops -d devops_learning 2>/dev/null || echo 'NOT_READY'"
         )
         if ok and "accepting" in out:
             result_pass("Primary PostgreSQL is accepting connections")
@@ -462,7 +462,7 @@ def execute_failback(config, state, force=False):
     step(4, total_steps, "Stopping primary PostgreSQL")
     ok, out, err = run_remote(
         ssh_host, ssh_user, ssh_key,
-        "docker stop devops-learning-app devops-learning-db devops-learning-nginx 2>/dev/null; echo DONE"
+        "docker stop devops-learning-app devops-learning-db-prod devops-learning-nginx 2>/dev/null; echo DONE"
     )
     if ok:
         result_pass("Primary containers stopped")
@@ -491,7 +491,7 @@ def execute_failback(config, state, force=False):
     # 6a: Dump the database on DR (local Docker)
     print(f"  {C.YELLOW}  6a. Dumping database on DR...{C.END}")
     ok1, dump_out, dump_err = run_cmd([
-        "sudo", "docker", "exec", "devops-learning-db",
+        "sudo", "docker", "exec", "devops-learning-db-dr",
         "pg_dumpall", "-U", "devops", "--clean", "--if-exists",
         "-f", "/tmp/failback_dump.sql"
     ], timeout=300)
@@ -504,7 +504,7 @@ def execute_failback(config, state, force=False):
 
     # 6b: Copy dump file from Docker container to host
     print(f"  {C.YELLOW}  6b. Extracting dump from container...{C.END}")
-    run_cmd("sudo docker cp devops-learning-db:/tmp/failback_dump.sql /tmp/failback_dump.sql", timeout=60)
+    run_cmd("sudo docker cp devops-learning-db-dr:/tmp/failback_dump.sql /tmp/failback_dump.sql", timeout=60)
     ok_size, size_out, _ = run_cmd("ls -lh /tmp/failback_dump.sql | awk '{print $5}'", timeout=5)
     if ok_size:
         result_pass(f"Dump file size: {size_out.strip()}")
@@ -533,7 +533,7 @@ def execute_failback(config, state, force=False):
     for attempt in range(1, 13):
         ok_ready, ready_out, _ = run_remote(
             ssh_host, ssh_user, ssh_key,
-            "docker exec devops-learning-db pg_isready -U devops -d devops_learning 2>/dev/null"
+            "docker exec devops-learning-db-prod pg_isready -U devops -d devops_learning 2>/dev/null"
         )
         if ok_ready and "accepting" in ready_out:
             pg_ready = True
@@ -548,11 +548,11 @@ def execute_failback(config, state, force=False):
     # 6e: Copy dump into container and restore
     print(f"  {C.YELLOW}  6e. Restoring database on primary...{C.END}")
     run_remote(ssh_host, ssh_user, ssh_key,
-               "docker cp /tmp/failback_dump.sql devops-learning-db:/tmp/failback_dump.sql",
+               "docker cp /tmp/failback_dump.sql devops-learning-db-prod:/tmp/failback_dump.sql",
                timeout=60)
     ok3, restore_out, restore_err = run_remote(
         ssh_host, ssh_user, ssh_key,
-        "docker exec devops-learning-db psql -U devops -d devops_learning "
+        "docker exec devops-learning-db-prod psql -U devops -d devops_learning "
         "-f /tmp/failback_dump.sql 2>&1 | tail -5",
         timeout=300
     )
@@ -568,7 +568,7 @@ def execute_failback(config, state, force=False):
     run_cmd("sudo rm -f /tmp/failback_dump.sql", timeout=5)
     run_remote(ssh_host, ssh_user, ssh_key,
                "rm -f /tmp/failback_dump.sql && "
-               "docker exec devops-learning-db rm -f /tmp/failback_dump.sql",
+               "docker exec devops-learning-db-prod rm -f /tmp/failback_dump.sql",
                timeout=10)
 
     # ── Step 7: Remove standby.signal on primary ──
@@ -643,7 +643,7 @@ def execute_failback(config, state, force=False):
 
     # Re-create replication slot on primary (if dropped)
     run_remote(ssh_host, ssh_user, ssh_key,
-               "docker exec devops-learning-db psql -U devops -d devops_learning -c "
+               "docker exec devops-learning-db-prod psql -U devops -d devops_learning -c "
                "\"SELECT pg_create_physical_replication_slot('dr_mumbai');\" 2>/dev/null || true")
 
     # Wipe DR data and re-sync
@@ -720,7 +720,7 @@ def execute_failback(config, state, force=False):
 
     time.sleep(10)
     ok, out, err = run_cmd(
-        "sudo docker logs devops-learning-db --tail 5 2>&1 | grep -c 'streaming WAL'",
+        "sudo docker logs devops-learning-db-dr --tail 5 2>&1 | grep -c 'streaming WAL'",
         timeout=10
     )
     if ok and out.strip() != "0":
@@ -770,7 +770,7 @@ def show_status(config, state):
     print(f"    State: {color}{status}{C.END}")
 
     ok, out, _ = run_cmd([
-        "sudo", "docker", "exec", "devops-learning-db",
+        "sudo", "docker", "exec", "devops-learning-db-dr",
         "psql", "-U", "devops", "-d", "devops_learning",
         "-t", "-c", "SELECT pg_is_in_recovery();"
     ])

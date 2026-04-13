@@ -9,7 +9,7 @@ LOG_PREFIX="[DR-MONITOR $(date -u +%Y-%m-%dT%H:%M:%SZ)]"
 
 # Check PostgreSQL primary connectivity
 check_pg() {
-  if docker exec devops-learning-db pg_isready -U devops -d devops_learning > /dev/null 2>&1; then
+  if docker exec devops-learning-db-dr pg_isready -U devops -d devops_learning > /dev/null 2>&1; then
     echo "$LOG_PREFIX PostgreSQL: ✅ healthy"
   else
     echo "$LOG_PREFIX PostgreSQL: ❌ UNHEALTHY"

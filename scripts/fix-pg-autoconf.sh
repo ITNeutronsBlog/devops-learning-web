@@ -20,7 +20,7 @@ PRIMARY_HOST="178.128.55.28"
 REPL_USER="replicator"
 REPL_PASS="Admin@123"
 REPL_SLOT="dr_mumbai"
-CONTAINER_NAME="devops-learning-db"
+CONTAINER_NAME="devops-learning-db-dr"
 
 # ── Parse args ──
 while [[ $# -gt 0 ]]; do
@@ -40,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --repl-user USER    Replication user (default: replicator)"
       echo "  --repl-pass PASS    Replication password (default: Admin@123)"
       echo "  --repl-slot SLOT    Replication slot name (default: dr_mumbai)"
-      echo "  --container NAME    Docker container name (default: devops-learning-db)"
+      echo "  --container NAME    Docker container name (default: devops-learning-db-dr)"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -60,8 +60,8 @@ echo "1/5 — Finding PostgreSQL data directory..."
 
 # Try Docker volume first
 PG_DATA=""
-if docker volume inspect "${CONTAINER_NAME/devops-learning-db/devops-learning-web}_pg_data" &>/dev/null; then
-  PG_DATA=$(docker volume inspect "${CONTAINER_NAME/devops-learning-db/devops-learning-web}_pg_data" --format '{{ .Mountpoint }}' 2>/dev/null)
+if docker volume inspect "${CONTAINER_NAME/devops-learning-db-dr/devops-learning-web}_pg_data" &>/dev/null; then
+  PG_DATA=$(docker volume inspect "${CONTAINER_NAME/devops-learning-db-dr/devops-learning-web}_pg_data" --format '{{ .Mountpoint }}' 2>/dev/null)
 fi
 
 # Fallback: check common paths

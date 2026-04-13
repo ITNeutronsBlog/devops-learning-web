@@ -22,7 +22,7 @@ Unlike the legacy backup/restore strategy, this guide reflects the current **Act
 **2. Verify System Health**
 Run these checks on the **Primary Server**:
 - Verify Primary Application is healthy: `curl http://localhost:3005/api/health`
-- Verify DR is streaming: `docker exec devops-learning-db psql -U devops -d devops_learning -c 'SELECT * FROM pg_stat_replication;'`
+- Verify DR is streaming: `docker exec devops-learning-db-dr psql -U devops -d devops_learning -c 'SELECT * FROM pg_stat_replication;'`
 
 **3. Insert "Tracer" Data**
 - Upload a specific test video or insert a clear dummy record (e.g., "DR-DRILL-TEST-1") into the database.
@@ -37,7 +37,7 @@ We will use the automated failover daemon to conduct the failover.
 **1. Isolate the Primary (Simulate Failure)**
 On the **Primary Server**, manually stop the database so the failover daemon detects a crash:
 ```bash
-sudo docker stop devops-learning-db
+sudo docker stop devops-learning-db-prod
 ```
 
 **2. Monitor Auto-Failover**
@@ -82,7 +82,7 @@ python3 scripts/auto_failback.py
 - Verify the DR Database is back in standby mode:
   ```bash
   # Run on DR Server
-  sudo docker exec devops-learning-db psql -U devops -d devops_learning -t -c "SELECT pg_is_in_recovery();"
+  sudo docker exec devops-learning-db-dr psql -U devops -d devops_learning -t -c "SELECT pg_is_in_recovery();"
   # Should output: 't' (true)
   ```
 
