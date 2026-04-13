@@ -162,7 +162,7 @@ def write_clean_autoconf(path, mode="primary", primary_host="", repl_user="repli
             f"primary_conninfo = 'host={primary_host} port=5432 user={repl_user} "
             f"password={repl_pass} application_name={repl_slot}'\n"
             f"primary_slot_name = '{repl_slot}'\n"
-            f"hot_standby = on\n"
+            f"hot_standby = 'on'\n"
         )
     else:
         # Primary mode — clean file with only the header
