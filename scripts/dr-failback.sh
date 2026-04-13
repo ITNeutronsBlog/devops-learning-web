@@ -16,11 +16,16 @@ echo "🔄 FAILBACK TO PRIMARY"
 echo "======================"
 
 # 1. Sync any new data from DR back to primary (manual step)
-echo "⚠️  MANUAL STEP: If data was written during DR, sync it back:"
+echo "⚠️  CRITICAL: You should use 'python3 auto_failback.py' instead!"
+echo "   The Python script safely handles pg_basebackup and postgresql.auto.conf"
+echo "   to prevent database corruption loops."
+echo ""
+echo "If you proceed manually, you must:"
 echo "   1. pg_dump on DR server"
 echo "   2. pg_restore on primary"
+echo "   3. Manually recreate postgresql.auto.conf on both servers"
 echo ""
-read -p "Press Enter after syncing data (or skip if no writes)..."
+read -p "Press Enter to proceed manually (or Ctrl+C to cancel)..."
 
 # 2. Stop DR stack
 echo "Stopping DR Docker stack..."

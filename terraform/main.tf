@@ -240,7 +240,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     }
 
     transition {
-      days          = 14
+      days          = 30
       storage_class = "STANDARD_IA"
     }
 
