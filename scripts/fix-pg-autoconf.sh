@@ -115,7 +115,6 @@ if [ "$MODE" = "standby" ]; then
 
 primary_conninfo = 'host=${PRIMARY_HOST} port=5432 user=${REPL_USER} password=${REPL_PASS} application_name=${REPL_SLOT}'
 primary_slot_name = '${REPL_SLOT}'
-hot_standby = 'on'
 EOF
 
   # Ensure standby.signal exists
