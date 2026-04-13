@@ -339,7 +339,7 @@ def execute_failover(config, state):
             if ssh_key:
                 ssh_cmd.extend(["-i", ssh_key])
             ssh_cmd.extend([f"{ssh_user}@{ssh_host}",
-                           "docker stop devops-learning-app devops-learning-db-prod 2>/dev/null || true"])
+                           "docker rm -f devops-learning-app devops-learning-nginx devops-learning-db-prod 2>/dev/null || true"])
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
                 log.info("  ✅ Primary containers stopped (fenced)")

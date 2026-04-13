@@ -450,7 +450,7 @@ def execute_failback(config, state, force=False):
     # ── Step 3: Stop app on DR (keep PG for data sync) ──
     step(3, total_steps, "Stopping app on DR (keeping PostgreSQL)")
     ok, out, err = run_cmd([
-        "sudo", "docker", "stop",
+        "sudo", "docker", "rm", "-f",
         "devops-learning-app", "devops-learning-nginx"
     ], timeout=30)
     if ok:
@@ -552,7 +552,7 @@ def execute_failback(config, state, force=False):
                timeout=60)
     ok3, restore_out, restore_err = run_remote(
         ssh_host, ssh_user, ssh_key,
-        "docker exec devops-learning-db-prod psql -U devops -d devops_learning "
+        "docker exec devops-learning-db-prod psql -U devops -d postgres "
         "-f /tmp/failback_dump.sql 2>&1 | tail -5",
         timeout=300
     )
@@ -634,12 +634,12 @@ def execute_failback(config, state, force=False):
     # ── Step 9: Convert DR back to standby ──
     step(9, total_steps, "Converting DR back to standby mode")
 
-    # Stop all DR containers
+    # Stop all DR containers and permanently destroy them (including ghost volumes/orphans)
     run_cmd(["sudo", "docker", "compose",
              "-f", f"{compose_path}/docker-compose.yml",
              "-f", f"{compose_path}/docker-compose.prod.yml",
              "-f", f"{compose_path}/docker-compose.dr.yml",
-             "down"], timeout=60)
+             "down", "-v", "--remove-orphans"], timeout=90)
 
     # Re-create replication slot on primary (if dropped)
     run_remote(ssh_host, ssh_user, ssh_key,
