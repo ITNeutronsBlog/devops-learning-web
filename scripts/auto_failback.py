@@ -178,7 +178,7 @@ def validate_autoconf(path, is_remote=False, ssh_host="", ssh_user="", ssh_key="
     """
     if is_remote:
         ok, content, err = run_remote(ssh_host, ssh_user, ssh_key,
-                                       f"cat {path}")
+                                       f"sudo cat {path}")
     else:
         ok, content, err = run_cmd(f"sudo cat {path}", timeout=10)
 
