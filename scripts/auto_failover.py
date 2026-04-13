@@ -402,11 +402,12 @@ def execute_failover(config, state):
         # ── Step 4: Start full application stack ──
         log.info("4/6 — Starting full application stack...")
         try:
-            # Ensure video data directory exists
-            os.makedirs("/data/videos/uploads", exist_ok=True)
-            subprocess.run(["chmod", "777", "/data/videos"], capture_output=True)
-            subprocess.run(["chmod", "777", "/data/videos/uploads"], capture_output=True)
-
+            # Fix permissions on the internal Docker named volume (not the host)
+            subprocess.run([
+                "sudo", "docker", "run", "--rm", 
+                "-v", "devops-learning-web_video_data:/data/videos", 
+                "alpine", "sh", "-c", "mkdir -p /data/videos/uploads && chmod -R 777 /data/videos"
+            ], capture_output=True)
             compose_files = [
                 "-f", f"{compose_path}/docker-compose.yml",
                 "-f", f"{compose_path}/docker-compose.prod.yml",
